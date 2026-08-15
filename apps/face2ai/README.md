@@ -1,0 +1,42 @@
+# Face2AI
+
+Face2AI is the local product layer built on top of the repository's existing `face_recognition` engine.
+
+## Product flow
+
+`UNKNOWN -> explicit LEARN -> leave frame -> return -> KNOWN -> greeting`
+
+The application is intentionally local-first. Camera frames are processed in memory and are not intentionally persisted. Stored identity records contain display names and face encodings only.
+
+## Architecture
+
+- browser: camera preview, overlays, enrollment, identity management, restrained ReactBits-inspired effects implemented as dependency-free CSS/ES modules;
+- API: FastAPI on localhost;
+- recognition: adapter over the repository's existing `face_recognition` package;
+- storage: atomic local JSON file;
+- no LLM, cloud service, database, or security authorization in MVP.
+
+## Development
+
+Target recognition runtime: Python 3.11 on macOS, pending the real-camera compatibility smoke.
+
+From the repository root:
+
+```bash
+uv sync --project apps/face2ai --group dev --extra recognition
+uv run --project apps/face2ai face2ai
+```
+
+Open `http://127.0.0.1:8765`.
+
+The `face_recognition` dependency is resolved from the repository root through `tool.uv.sources`. The temporary `setuptools<82` compatibility pin exists because the current model package still relies on `pkg_resources`; it is explicit S0 compatibility debt, not a permanent design choice.
+
+## Verification
+
+```bash
+PYTHONPATH=apps/face2ai/src pytest apps/face2ai/tests
+python -m compileall -q apps/face2ai/src
+for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done
+```
+
+Real recognition is not proven by unit tests. Before calling the product flow runtime-verified, run the target-Mac camera smoke described in `docs/boilerplate/VALIDATION.md`.

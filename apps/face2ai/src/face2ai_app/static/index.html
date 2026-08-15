@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07090d" />
+  <title>Face2AI</title>
+  <link rel="stylesheet" href="/assets/css/app.css" />
+</head>
+<body>
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="topbar"><div class="brand"><span class="brand-mark"></span><span>FACE2AI</span></div><div class="system-pill" id="enginePill"><span class="pulse"></span><span id="engineText">CHECKING ENGINE</span></div></header>
+    <section class="stage">
+      <div class="vision-panel spotlight" id="visionPanel">
+        <video id="camera" autoplay muted playsinline></video><canvas id="overlay"></canvas>
+        <div class="vision-idle" id="visionIdle"><div class="orb"></div><p>LOCAL VISION</p></div>
+        <button class="vision-control primary magnet" id="cameraButton">Activate camera</button><div class="scanline" id="scanline"></div>
+        <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+      </div>
+      <aside class="identity-rail">
+        <section class="identity-card spotlight"><span class="eyebrow">IDENTITY STATE</span><h1 id="identityState">VISION OFFLINE</h1><p id="identityName">No person resolved</p><div class="metric-row"><div><span>FACES</span><strong id="faceCount">0</strong></div><div><span>DISTANCE</span><strong id="distance">—</strong></div></div><button class="primary magnet" id="learnButton" disabled>Learn person</button></section>
+        <section class="mini-card spotlight"><div class="mini-head"><span>IDENTITY STORE</span><button class="ghost" id="manageButton">Manage</button></div><strong id="identityCount">0</strong><span class="muted">local identities</span></section>
+      </aside>
+    </section>
+    <section class="event-band spotlight"><span class="eyebrow">LIVE EVENT</span><p id="eventText">Camera inactive. No frames are being processed.</p><button class="ghost" id="pauseButton" disabled>Pause recognition</button></section>
+  </main>
+  <dialog id="enrollDialog" class="dialog"><form method="dialog" id="enrollForm"><span class="eyebrow">LOCAL ENROLLMENT</span><h2>Teach Face2AI a person</h2><label>Name<input id="displayName" maxlength="80" autocomplete="off" required /></label><label class="consent"><input id="consent" type="checkbox" required /> Store a local face encoding and this display name for Face2AI recognition.</label><p class="muted">No raw camera frame is intentionally stored.</p><div class="dialog-actions"><button value="cancel" class="ghost">Cancel</button><button value="default" class="primary">Learn</button></div></form></dialog>
+  <dialog id="identityDialog" class="dialog wide"><form method="dialog"><div class="mini-head"><div><span class="eyebrow">LOCAL STORE</span><h2>Known identities</h2></div><button class="ghost">Close</button></div><div id="identityList" class="identity-list"></div><button type="button" class="danger" id="eraseAllButton">Erase all identities</button></form></dialog>
+  <script type="module" src="/assets/js/app.js"></script>
+</body>
+</html>

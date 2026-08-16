@@ -3,14 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from face2ai_app.adapters.face_recognition_engine import FaceRecognitionEngine
 from face2ai_app.adapters.json_identity_store import JsonIdentityStore
 from face2ai_app.api.routes import router
 from face2ai_app.config import Settings
+from face2ai_app.domain.errors import IdentityStoreCorrupted
 from face2ai_app.services.identity_service import IdentityService
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -20,9 +21,21 @@ def create_app(*, settings: Settings | None = None, engine=None, store=None) -> 
     app_settings = settings or Settings.from_env()
     recognition_engine = engine or FaceRecognitionEngine()
     identity_store = store or JsonIdentityStore(app_settings.identity_store_path)
+
     app = FastAPI(title="Face2AI", version="0.1.0", docs_url="/api/docs", redoc_url=None)
     app.state.settings = app_settings
-    app.state.identity_service = IdentityService(engine=recognition_engine, store=identity_store, tolerance=app_settings.match_tolerance)
+    app.state.identity_service = IdentityService(
+        engine=recognition_engine,
+        store=identity_store,
+        tolerance=app_settings.match_tolerance,
+    )
+
+    @app.exception_handler(IdentityStoreCorrupted)
+    async def identity_store_corrupted_handler(
+        request: Request, exc: IdentityStoreCorrupted
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     app.include_router(router)
     app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 

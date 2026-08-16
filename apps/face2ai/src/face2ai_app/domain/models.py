@@ -76,3 +76,4 @@ class SystemStatus(BaseModel):
     engine_available: bool
     engine_reason: str | None = None
     identity_count: int
+    greeting_cooldown_seconds: int

@@ -12,3 +12,7 @@ class InvalidFrame(Face2AIError):
 
 class EnrollmentRejected(Face2AIError):
     pass
+
+
+class IdentityStoreCorrupted(Face2AIError):
+    """Raised when persisted identity data cannot be safely decoded or validated."""

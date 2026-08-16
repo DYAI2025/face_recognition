@@ -6,6 +6,9 @@ import tempfile
 import threading
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from face2ai_app.domain.errors import IdentityStoreCorrupted
 from face2ai_app.domain.models import IdentityRecord
 
 
@@ -17,13 +20,33 @@ class JsonIdentityStore:
     def _read(self) -> list[IdentityRecord]:
         if not self._path.exists():
             return []
-        raw = json.loads(self._path.read_text(encoding="utf-8"))
-        return [IdentityRecord.model_validate(item) for item in raw]
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise IdentityStoreCorrupted(
+                f"identity store contains invalid JSON: {self._path}"
+            ) from exc
+        if not isinstance(raw, list):
+            raise IdentityStoreCorrupted(
+                f"identity store root must be a JSON array: {self._path}"
+            )
+        try:
+            return [IdentityRecord.model_validate(item) for item in raw]
+        except ValidationError as exc:
+            raise IdentityStoreCorrupted(
+                f"identity store contains invalid identity records: {self._path}"
+            ) from exc
 
     def _write(self, records: list[IdentityRecord]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps([record.model_dump(mode="json") for record in records], ensure_ascii=False, indent=2) + "\n"
-        fd, temp_name = tempfile.mkstemp(prefix="identities-", suffix=".json", dir=self._path.parent)
+        payload = json.dumps(
+            [record.model_dump(mode="json") for record in records],
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+        fd, temp_name = tempfile.mkstemp(
+            prefix="identities-", suffix=".json", dir=self._path.parent
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload)

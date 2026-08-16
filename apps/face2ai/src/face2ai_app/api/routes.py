@@ -46,7 +46,14 @@ def readiness(request: Request, response: Response) -> dict[str, str | bool | No
 @router.get("/api/status", response_model=SystemStatus)
 def system_status(request: Request) -> SystemStatus:
     service = _service(request)
-    return SystemStatus(version=__version__, engine_available=service.engine.available, engine_reason=service.engine.availability_reason, identity_count=len(service.store.list()))
+    settings = _settings(request)
+    return SystemStatus(
+        version=__version__,
+        engine_available=service.engine.available,
+        engine_reason=service.engine.availability_reason,
+        identity_count=len(service.store.list()),
+        greeting_cooldown_seconds=settings.greeting_cooldown_seconds,
+    )
 
 
 @router.post("/api/recognize", response_model=RecognitionEvent)
@@ -60,9 +67,15 @@ async def recognize(request: Request) -> RecognitionEvent:
 
 
 @router.post("/api/enroll", response_model=IdentitySummary, status_code=201)
-async def enroll(request: Request, display_name: str = Query(min_length=1, max_length=80), consent: bool = Query(default=False)) -> IdentitySummary:
+async def enroll(
+    request: Request,
+    display_name: str = Query(min_length=1, max_length=80),
+    consent: bool = Query(default=False),
+) -> IdentitySummary:
     try:
-        return _service(request).enroll(await _image_body(request), display_name=display_name, consent=consent)
+        return _service(request).enroll(
+            await _image_body(request), display_name=display_name, consent=consent
+        )
     except RecognitionUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (EnrollmentRejected, InvalidFrame) as exc:

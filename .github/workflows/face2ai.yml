@@ -1,0 +1,35 @@
+name: Face2AI
+
+on:
+  push:
+    paths:
+      - 'apps/face2ai/**'
+      - '.github/workflows/face2ai.yml'
+  pull_request:
+    paths:
+      - 'apps/face2ai/**'
+      - '.github/workflows/face2ai.yml'
+
+jobs:
+  app-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install app-shell test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e apps/face2ai
+          python -m pip install pytest==9.0.2 httpx==0.28.1
+      - name: Python compile
+        run: python -m compileall -q apps/face2ai/src
+      - name: Tests
+        run: pytest apps/face2ai/tests
+      - name: Browser module syntax
+        run: |
+          for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done

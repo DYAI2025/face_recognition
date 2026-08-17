@@ -8,6 +8,7 @@ Run from repository root:
 PYTHONPATH=apps/face2ai/src pytest apps/face2ai/tests
 python -m compileall -q apps/face2ai/src
 for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done
+node --test 'apps/face2ai/tests/js/**/*.test.mjs'
 ```
 
 ## Runtime shell smoke

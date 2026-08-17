@@ -10,7 +10,7 @@ The application is intentionally local-first. Camera frames are processed in mem
 
 ## Architecture
 
-- browser: camera preview, overlays, enrollment, identity management, restrained ReactBits-inspired effects implemented as dependency-free CSS/ES modules;
+- browser: camera preview, overlays, enrollment with explicit consent, identity management, event stream and spoken greeting; restrained ReactBits-inspired effects implemented as dependency-free CSS/ES modules (see `docs/UI_DIRECTION.md`);
 - API: FastAPI on localhost;
 - recognition: adapter over the repository's existing `face_recognition` package;
 - storage: atomic local JSON file;
@@ -18,7 +18,7 @@ The application is intentionally local-first. Camera frames are processed in mem
 
 ## Development
 
-Target recognition runtime: Python 3.11 on macOS, pending the real-camera compatibility smoke.
+Target recognition runtime: Python 3.11 on macOS. On 2026-08-17 the recognition extra also built and ran on macOS/arm64 with Python 3.12 (dlib 20.0.1) via `uv sync --extra recognition`.
 
 From the repository root:
 
@@ -37,6 +37,7 @@ The `face_recognition` dependency is resolved from the repository root through `
 PYTHONPATH=apps/face2ai/src pytest apps/face2ai/tests
 python -m compileall -q apps/face2ai/src
 for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done
+node --test 'apps/face2ai/tests/js/**/*.test.mjs'
 ```
 
 Real recognition is not proven by unit tests. Before calling the product flow runtime-verified, run the target-Mac camera smoke described in `docs/boilerplate/VALIDATION.md`.

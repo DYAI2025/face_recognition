@@ -10,10 +10,13 @@ Preserve the shortest real product loop: `UNKNOWN -> explicit LEARN -> leave -> 
 - `domain/` must not import FastAPI, browser code, storage adapters, or `face_recognition`.
 - Third-party recognition belongs behind `RecognitionEngine`.
 - Persistence belongs behind `IdentityStore`.
-- HTTP belongs in `api/`; browser behavior belongs in `static/`.
+- HTTP belongs in `api/`; browser behavior belongs in `static/` (ES modules, no build step; visual rules in `docs/UI_DIRECTION.md`).
+- Browser view logic that needs no DOM lives in `static/js/model.js` and is covered by `tests/js/*.test.mjs` (`node --test`).
 - New Party Mirror or agent behavior must consume identity/recognition events instead of being inserted into face matching.
 - Do not persist raw camera frames by default.
 - Do not represent face distance as a confidence percentage.
+- The browser consumes `RecognitionEvent.can_enroll` / `message` and `SystemStatus.engine_available`; it never re-derives recognition state or engine readiness client-side.
+- Destructive actions confirm in a native `<dialog>`, never via `confirm()`/`alert()`.
 - Do not use face recognition as authentication or authorization.
 
 ## Before changing code
@@ -30,6 +33,7 @@ Preserve the shortest real product loop: `UNKNOWN -> explicit LEARN -> leave -> 
 PYTHONPATH=apps/face2ai/src pytest apps/face2ai/tests
 python -m compileall -q apps/face2ai/src
 for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done
+node --test 'apps/face2ai/tests/js/**/*.test.mjs'
 ```
 
 Mock/injected recognition tests are not evidence that real camera recognition works. Real recognition requires the target-Mac gate in `docs/boilerplate/VALIDATION.md`.

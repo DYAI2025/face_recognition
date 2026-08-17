@@ -33,3 +33,5 @@ jobs:
       - name: Browser module syntax
         run: |
           for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done
+      - name: Browser model tests
+        run: node --test 'apps/face2ai/tests/js/**/*.test.mjs'

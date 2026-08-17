@@ -9,7 +9,8 @@ import logging
 from typing import Any
 
 import httpx
-from livekit.agents import Agent, AgentSession, JobContext, JobProcess, RunContext, function_tool
+from livekit.agents import Agent, AgentSession, APIConnectOptions, JobContext, JobProcess, RunContext, function_tool
+from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import silero
 
 from .config import AgentConfig, ResolvedProviders, resolve_providers
@@ -121,6 +122,13 @@ def prewarm(proc: JobProcess) -> None:
     proc.userdata["vad"] = silero.VAD.load()
 
 
+def llm_connect_options(resolved: ResolvedProviders) -> APIConnectOptions:
+    """LiveKit applies conn_options.timeout per request (it overrides the client's own timeout).
+    A full Hermes turn can take 10-30 s; bare models answer within seconds."""
+    timeout = 90.0 if resolved.llm == "hermes" else 30.0
+    return APIConnectOptions(max_retry=2, retry_interval=2.0, timeout=timeout)
+
+
 def build_session(config: AgentConfig, resolved: ResolvedProviders, *, vad: Any = None) -> AgentSession:
     return AgentSession(
         stt=build_stt(config, resolved),
@@ -128,6 +136,7 @@ def build_session(config: AgentConfig, resolved: ResolvedProviders, *, vad: Any 
         tts=build_tts(config, resolved),
         vad=vad or silero.VAD.load(),
         turn_detection=build_turn_detection(),
+        conn_options=SessionConnectOptions(llm_conn_options=llm_connect_options(resolved)),
     )
 
 

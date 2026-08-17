@@ -77,7 +77,9 @@ async def check(*, paid_probes: bool = False) -> int:
         chat_ctx.add_message(role="user", content="Reply with exactly the single word OK.")
         started = time.perf_counter()
         text = ""
-        async with llm.chat(chat_ctx=chat_ctx) as stream:
+        from .agent import llm_connect_options
+
+        async with llm.chat(chat_ctx=chat_ctx, conn_options=llm_connect_options(resolved)) as stream:
             async for chunk in stream:
                 if chunk.delta and chunk.delta.content:
                     text += chunk.delta.content
@@ -166,8 +168,11 @@ async def smoke(user_text: str) -> int:
     print("presence         :", memory.describe())
     print("greetings due    :", [p.kind for p in prompts] or "none in the last 1.5 s")
 
+    from .agent import llm_connect_options
+    from livekit.agents.voice.agent_session import SessionConnectOptions
+
     agent = Face2AIAgent(config, memory)
-    session = AgentSession(llm=build_llm(config, resolved))
+    session = AgentSession(llm=build_llm(config, resolved), conn_options=SessionConnectOptions(llm_conn_options=llm_connect_options(resolved)))
     await session.start(agent)
     print("instructions     :", build_instructions(config, memory).splitlines()[-1])
     result = await session.run(user_input=user_text)

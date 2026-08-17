@@ -5,11 +5,13 @@ on:
     paths:
       - 'apps/face2ai/**'
       - 'apps/face2ai-agent/**'
+      - 'apps/face2ai-hermes-plugin/**'
       - '.github/workflows/face2ai.yml'
   pull_request:
     paths:
       - 'apps/face2ai/**'
       - 'apps/face2ai-agent/**'
+      - 'apps/face2ai-hermes-plugin/**'
       - '.github/workflows/face2ai.yml'
 
 jobs:
@@ -49,3 +51,19 @@ jobs:
         run: uv run --project apps/face2ai-agent python -m compileall -q apps/face2ai-agent/src
       - name: Unit tests
         run: uv run --project apps/face2ai-agent pytest apps/face2ai-agent/tests
+
+  hermes-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit tests (no Hermes needed)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest==9.0.2
+          python -m compileall -q apps/face2ai-hermes-plugin/face2ai
+          pytest apps/face2ai-hermes-plugin/tests
+      - name: Desktop half is plain ESM
+        run: node --check apps/face2ai-hermes-plugin/face2ai/desktop/plugin.js

@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'apps/face2ai/**'
+      - 'apps/face2ai-agent/**'
       - '.github/workflows/face2ai.yml'
   pull_request:
     paths:
       - 'apps/face2ai/**'
+      - 'apps/face2ai-agent/**'
       - '.github/workflows/face2ai.yml'
 
 jobs:
@@ -33,3 +35,17 @@ jobs:
       - name: Browser module syntax
         run: |
           for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done
+      - name: Browser model tests
+        run: node --test 'apps/face2ai/tests/js/**/*.test.mjs'
+
+  voice-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install voice agent
+        run: uv sync --project apps/face2ai-agent --group dev --extra groq
+      - name: Compile
+        run: uv run --project apps/face2ai-agent python -m compileall -q apps/face2ai-agent/src
+      - name: Unit tests
+        run: uv run --project apps/face2ai-agent pytest apps/face2ai-agent/tests

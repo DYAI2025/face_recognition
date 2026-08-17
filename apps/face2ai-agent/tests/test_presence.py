@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from face2ai_agent.presence import PresenceMemory, StoreChange, Transition, parse_sse
+
+T0 = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+
+
+def test_parse_sse_handles_ids_events_and_multiline_data():
+    lines = [
+        "id: 3",
+        "event: presence",
+        'data: {"to_state": "KNOWN",',
+        'data:  "display_name": "Ada"}',
+        "",
+        ": comment",
+        "event: heartbeat",
+        'data: {"presence": {"state": "KNOWN"}}',
+        "",
+        "data: not json",
+        "",
+    ]
+    frames = list(parse_sse(lines))
+    assert [f.event for f in frames] == ["presence", "heartbeat", "message"]
+    assert frames[0].id == "3" and frames[0].data == {"to_state": "KNOWN", "display_name": "Ada"}
+    assert frames[1].id is None
+    assert frames[2].data == {"raw": "not json"}
+
+
+def test_memory_hello_transitions_and_describe():
+    memory = PresenceMemory()
+    assert "not connected" in memory.describe()
+    memory.apply_hello({"presence": {"state": "NO_FACE", "since": T0.isoformat()}, "greeting_cooldown_seconds": 9, "engine_available": True})
+    assert memory.connected and memory.greeting_cooldown_seconds == 9
+    assert "nobody is in front" in memory.describe(T0 + timedelta(seconds=2))
+
+    memory.apply_transition(Transition.from_payload({"at": T0.isoformat(), "from_state": "NO_FACE", "to_state": "KNOWN", "identity_id": "a", "display_name": "Ada", "faces": 1}))
+    text = memory.describe(T0 + timedelta(seconds=30))
+    assert text.startswith("Ada is in front of the camera")
+    assert "about 30 seconds" in text
+
+    memory.apply_transition(Transition.from_payload({"at": (T0 + timedelta(seconds=40)).isoformat(), "from_state": "KNOWN", "to_state": "UNKNOWN", "faces": 1}))
+    memory.apply_transition(Transition.from_payload({"at": (T0 + timedelta(seconds=41)).isoformat(), "from_state": "UNKNOWN", "to_state": "NO_FACE", "faces": 0}))
+    text = memory.describe(T0 + timedelta(seconds=41))
+    assert "nobody is in front" in text
+    assert "Recently seen: Ada" in text  # history is kept ...
+    assert "no face" not in text and "unknown at" not in text  # ... but only people are listed
+
+    memory.apply_store_change(StoreChange.from_payload({"kind": "enrolled", "display_name": "Bo", "identity_count": 2}))
+    assert "2 people are enrolled" in memory.describe(T0 + timedelta(seconds=42))
+
+
+def test_memory_multiple_and_stale_and_engine_down():
+    memory = PresenceMemory()
+    memory.apply_hello({"presence": {"state": "MULTIPLE_FACES", "faces": 3, "stale": True}, "engine_available": False})
+    text = memory.describe()
+    assert "3 people" in text and "cannot attribute identity" in text
+    assert "No fresh frames" in text
+    assert "engine reports itself unavailable" in text
+    memory.apply_heartbeat({"presence": {"state": "NO_SIGNAL"}})
+    assert "camera is currently off" in memory.describe()
+
+
+def test_unknown_states_are_normalized():
+    memory = PresenceMemory()
+    memory.apply_hello({"presence": {"state": "WEIRD"}})
+    assert memory.current.state == "NO_SIGNAL"
+
+
+def test_situation_key_ignores_elapsed_time_but_tracks_state_changes():
+    memory = PresenceMemory()
+    memory.apply_hello({"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "since": T0.isoformat()}, "last_sequence": 7})
+    key = memory.situation_key()
+    assert memory.describe(T0 + timedelta(seconds=1)) != memory.describe(T0 + timedelta(seconds=90))  # elapsed text differs
+    assert memory.situation_key() == key  # ... but the situation key is stable
+    memory.apply_heartbeat({"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "stale": True}})
+    assert memory.situation_key() != key
+    assert memory.hello_sequence == 7
+    assert memory.is_replayed({"sequence": 7}) and memory.is_replayed({"sequence": 3})
+    assert not memory.is_replayed({"sequence": 8}) and not memory.is_replayed({})
+
+
+async def test_presence_loop_flags_replayed_events(monkeypatch):
+    from face2ai_agent import presence as mod
+
+    frames = [
+        mod.SseFrame("hello", {"presence": {"state": "NO_FACE"}, "last_sequence": 2}),
+        mod.SseFrame("presence", {"sequence": 1, "from_state": "NO_SIGNAL", "to_state": "KNOWN", "identity_id": "a", "display_name": "Ada", "faces": 1}, "1"),
+        mod.SseFrame("store", {"sequence": 2, "kind": "enrolled", "display_name": "Bo", "identity_count": 2}, "2"),
+        mod.SseFrame("presence", {"sequence": 3, "from_state": "KNOWN", "to_state": "UNKNOWN", "faces": 1}, "3"),
+        mod.SseFrame("heartbeat", {"presence": {"state": "UNKNOWN"}}),
+    ]
+
+    class FakeClient:
+        async def frames(self):
+            for f in frames:
+                yield f
+
+    seen = []
+
+    async def on_event(kind, payload, replayed):
+        seen.append((kind, replayed))
+
+    memory = mod.PresenceMemory()
+    await mod.run_presence_loop(FakeClient(), memory, on_event)
+    assert seen == [("hello", False), ("presence", True), ("store", True), ("presence", False), ("heartbeat", False)]
+    assert memory.current.state == "UNKNOWN"
+    assert len(memory.history) == 2 and memory.identity_count == 2

@@ -77,3 +77,52 @@ class SystemStatus(BaseModel):
     engine_reason: str | None = None
     identity_count: int
     greeting_cooldown_seconds: int
+    agent_connected: bool = False
+    event_subscribers: int = 0
+
+
+class PresenceState(StrEnum):
+    """Stable, debounced view of who is in front of the camera (derived from RecognitionEvents)."""
+
+    NO_SIGNAL = "NO_SIGNAL"
+    NO_FACE = "NO_FACE"
+    UNKNOWN = "UNKNOWN"
+    KNOWN = "KNOWN"
+    MULTIPLE_FACES = "MULTIPLE_FACES"
+
+
+class Presence(BaseModel):
+    """Wire contract for agents / Party Mirror: states, names, counts, timestamps — nothing biometric."""
+
+    state: PresenceState = PresenceState.NO_SIGNAL
+    identity_id: str | None = None
+    display_name: str | None = None
+    faces: int = 0
+    since: datetime | None = None
+    observed_at: datetime | None = None
+    stale: bool = False
+
+
+class PresenceTransition(BaseModel):
+    """Emitted once per stable presence change; consumers (agents, Party Mirror) subscribe to these."""
+
+    at: datetime
+    from_state: PresenceState
+    to_state: PresenceState
+    identity_id: str | None = None
+    display_name: str | None = None
+    faces: int = 0
+
+
+class StoreEventKind(StrEnum):
+    ENROLLED = "enrolled"
+    DELETED = "deleted"
+    ERASED = "erased"
+
+
+class StoreEvent(BaseModel):
+    at: datetime
+    kind: StoreEventKind
+    identity_id: str | None = None
+    display_name: str | None = None
+    identity_count: int

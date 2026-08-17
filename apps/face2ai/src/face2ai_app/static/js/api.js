@@ -1,9 +1,72 @@
-export async function getStatus(){return jsonFetch('/api/status')}
-export async function listIdentities(){return jsonFetch('/api/identities')}
-export async function deleteIdentity(id){const r=await fetch(`/api/identities/${encodeURIComponent(id)}`,{method:'DELETE'});if(!r.ok&&r.status!==204)throw await apiError(r)}
-export async function eraseAll(){return jsonFetch('/api/identities',{method:'DELETE'})}
-export async function recognize(blob){return imageFetch('/api/recognize',blob)}
-export async function enroll(blob,name){const qs=new URLSearchParams({display_name:name,consent:'true'});return imageFetch(`/api/enroll?${qs}`,blob,{method:'POST'})}
-async function imageFetch(url,blob,init={}){const r=await fetch(url,{method:init.method||'POST',headers:{'content-type':'image/jpeg'},body:blob});if(!r.ok)throw await apiError(r);return r.json()}
-async function jsonFetch(url,init){const r=await fetch(url,init);if(!r.ok)throw await apiError(r);return r.status===204?null:r.json()}
-async function apiError(r){let detail=`HTTP ${r.status}`;try{const b=await r.json();detail=b.detail||detail}catch{}return new Error(detail)}
+// Thin client for the local Face2AI API (see api/routes.py). Frames are sent as raw
+// image/jpeg bodies; enrollment parameters travel as query parameters. Errors carry the
+// server's `detail` text and HTTP status so the UI can show the real reason.
+
+export async function getStatus() {
+  return jsonFetch('/api/status');
+}
+
+export async function listIdentities() {
+  return jsonFetch('/api/identities');
+}
+
+export async function deleteIdentity(id) {
+  return jsonFetch(`/api/identities/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function eraseAll() {
+  return jsonFetch('/api/identities', { method: 'DELETE' });
+}
+
+/** Camera stopped/paused: tell the backend so presence subscribers (voice agent) see NO_SIGNAL. */
+export async function resetPresence() {
+  return jsonFetch('/api/presence/reset', { method: 'POST' });
+}
+
+/** Page is going away: fire-and-forget reset (sendBeacon survives unload; falls back to keepalive fetch). */
+export function resetPresenceBeacon() {
+  if (navigator.sendBeacon && navigator.sendBeacon('/api/presence/reset')) return;
+  fetch('/api/presence/reset', { method: 'POST', keepalive: true }).catch(() => {});
+}
+
+/** Returns { event, agentConnected }: the backend flags on every frame whether a voice agent owns greetings. */
+export async function recognize(blob) {
+  const response = await fetch('/api/recognize', { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob });
+  if (!response.ok) throw await apiError(response);
+  return { event: await response.json(), agentConnected: response.headers.get('x-face2ai-agent') === '1' };
+}
+
+export async function enroll(blob, name, consent) {
+  const qs = new URLSearchParams({ display_name: name, consent: consent ? 'true' : 'false' });
+  return imageFetch(`/api/enroll?${qs}`, blob);
+}
+
+async function imageFetch(url, blob) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'image/jpeg' },
+    body: blob,
+  });
+  if (!response.ok) throw await apiError(response);
+  return response.json();
+}
+
+async function jsonFetch(url, init) {
+  const response = await fetch(url, { cache: 'no-store', ...init });
+  if (!response.ok) throw await apiError(response);
+  return response.status === 204 ? null : response.json();
+}
+
+async function apiError(response) {
+  let detail = `HTTP ${response.status}`;
+  try {
+    const body = await response.json();
+    if (typeof body.detail === 'string') detail = body.detail;
+    else if (Array.isArray(body.detail)) detail = body.detail.map((d) => d.msg || JSON.stringify(d)).join('; ');
+  } catch {
+    // Non-JSON error body: keep the HTTP status text.
+  }
+  const error = new Error(detail);
+  error.status = response.status;
+  return error;
+}

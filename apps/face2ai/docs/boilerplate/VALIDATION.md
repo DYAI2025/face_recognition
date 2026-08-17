@@ -8,6 +8,7 @@ Run from repository root:
 PYTHONPATH=apps/face2ai/src pytest apps/face2ai/tests
 python -m compileall -q apps/face2ai/src
 for file in apps/face2ai/src/face2ai_app/static/js/*.js; do node --check "$file"; done
+node --test 'apps/face2ai/tests/js/**/*.test.mjs'
 ```
 
 ## Runtime shell smoke
@@ -34,3 +35,17 @@ This is mandatory before claiming the real product flow works:
 9. Record versions, command outputs, match distances, failures, and latency observation.
 
 Unit or injected-adapter tests do not satisfy this real-boundary gate.
+
+## Voice agent gate (apps/face2ai-agent, ADR-002)
+
+```bash
+cd apps/face2ai-agent && uv sync --group dev --extra groq
+uv run pytest                                   # unit tests, no network
+uv run face2ai-agent check                      # live: Face2AI reachable, SSE hello, LLM round trip (+ local TTS)
+uv run face2ai-agent smoke "Wer ist gerade vor der Kamera?"   # live text turn with tool calls
+uv run face2ai-agent console                    # manual: speak; step in front of the camera as an enrolled person -> spoken greeting by name
+```
+
+Required manual gate: with the browser running and one enrolled adult, `console` must greet the
+person by name when Face2AI recognizes them, must not greet again within the cooldown, and the
+browser's event stream must show "Greeting delegated" instead of speaking itself.

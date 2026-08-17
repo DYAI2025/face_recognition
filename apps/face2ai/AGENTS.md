@@ -12,7 +12,8 @@ Preserve the shortest real product loop: `UNKNOWN -> explicit LEARN -> leave -> 
 - Persistence belongs behind `IdentityStore`.
 - HTTP belongs in `api/`; browser behavior belongs in `static/` (ES modules, no build step; visual rules in `docs/UI_DIRECTION.md`).
 - Browser view logic that needs no DOM lives in `static/js/model.js` and is covered by `tests/js/*.test.mjs` (`node --test`).
-- New Party Mirror or agent behavior must consume identity/recognition events instead of being inserted into face matching.
+- New Party Mirror or agent behavior must consume identity/recognition events instead of being inserted into face matching. The event surface is `services/presence.py` (`PresenceTracker`, debounced transitions) + `services/events.py` (`IdentityEventBroker`) exposed as `GET /api/events` (SSE) and `GET /api/presence`; it carries states, names, counts and timestamps only — never frames, boxes or encodings (a test enforces this).
+- The voice agent lives in `apps/face2ai-agent/` (LiveKit Agents, own uv project, ADR-002). It subscribes with `?role=agent`; while it is connected the browser leaves the spoken greeting to it (`SystemStatus.agent_connected`).
 - Do not persist raw camera frames by default.
 - Do not represent face distance as a confidence percentage.
 - The browser consumes `RecognitionEvent.can_enroll` / `message` and `SystemStatus.engine_available`; it never re-derives recognition state or engine readiness client-side.

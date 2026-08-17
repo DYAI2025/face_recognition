@@ -13,6 +13,20 @@ class Settings:
     max_frame_bytes: int = 5 * 1024 * 1024
     data_dir: Path = Path.home() / ".face2ai"
     greeting_cooldown_seconds: int = 15
+    presence_stable_ticks: int = 2
+    presence_stale_seconds: float = 5.0
+    events_heartbeat_seconds: float = 15.0
+    events_buffer_size: int = 200
+
+    def __post_init__(self) -> None:
+        if self.presence_stale_seconds <= 0:
+            raise ValueError("FACE2AI_PRESENCE_STALE_SECONDS must be > 0")
+        if self.events_heartbeat_seconds <= 0:
+            raise ValueError("FACE2AI_EVENTS_HEARTBEAT_SECONDS must be > 0")
+        if self.presence_stable_ticks < 1:
+            raise ValueError("FACE2AI_PRESENCE_STABLE_TICKS must be >= 1")
+        if self.events_buffer_size < 1:
+            raise ValueError("FACE2AI_EVENTS_BUFFER_SIZE must be >= 1")
 
     @property
     def identity_store_path(self) -> Path:
@@ -27,4 +41,8 @@ class Settings:
             max_frame_bytes=int(os.getenv("FACE2AI_MAX_FRAME_BYTES", str(5 * 1024 * 1024))),
             data_dir=Path(os.getenv("FACE2AI_DATA_DIR", str(Path.home() / ".face2ai"))).expanduser(),
             greeting_cooldown_seconds=int(os.getenv("FACE2AI_GREETING_COOLDOWN_SECONDS", "15")),
+            presence_stable_ticks=int(os.getenv("FACE2AI_PRESENCE_STABLE_TICKS", "2")),
+            presence_stale_seconds=float(os.getenv("FACE2AI_PRESENCE_STALE_SECONDS", "5")),
+            events_heartbeat_seconds=float(os.getenv("FACE2AI_EVENTS_HEARTBEAT_SECONDS", "15")),
+            events_buffer_size=int(os.getenv("FACE2AI_EVENTS_BUFFER_SIZE", "200")),
         )

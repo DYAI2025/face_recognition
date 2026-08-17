@@ -18,8 +18,22 @@ export async function eraseAll() {
   return jsonFetch('/api/identities', { method: 'DELETE' });
 }
 
+/** Camera stopped/paused: tell the backend so presence subscribers (voice agent) see NO_SIGNAL. */
+export async function resetPresence() {
+  return jsonFetch('/api/presence/reset', { method: 'POST' });
+}
+
+/** Page is going away: fire-and-forget reset (sendBeacon survives unload; falls back to keepalive fetch). */
+export function resetPresenceBeacon() {
+  if (navigator.sendBeacon && navigator.sendBeacon('/api/presence/reset')) return;
+  fetch('/api/presence/reset', { method: 'POST', keepalive: true }).catch(() => {});
+}
+
+/** Returns { event, agentConnected }: the backend flags on every frame whether a voice agent owns greetings. */
 export async function recognize(blob) {
-  return imageFetch('/api/recognize', blob);
+  const response = await fetch('/api/recognize', { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob });
+  if (!response.ok) throw await apiError(response);
+  return { event: await response.json(), agentConnected: response.headers.get('x-face2ai-agent') === '1' };
 }
 
 export async function enroll(blob, name, consent) {

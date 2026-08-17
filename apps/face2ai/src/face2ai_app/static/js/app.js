@@ -34,6 +34,7 @@ const state = {
   enrolling: false,     // true while the enroll dialog is open or the enroll request is in flight
   enrollBlob: null,     // frame + event frozen when the dialog opened
   enrollEvent: null,
+  agentConnected: false, // a voice agent subscribes to /api/events; it then owns the spoken greeting
 };
 
 const IDLE_VIEW = describeEvent({ state: 'NO_FACE' });
@@ -143,6 +144,7 @@ async function refreshStatus() {
     state.cooldownMs = Math.max(0, Number(status.greeting_cooldown_seconds) || 0) * 1000;
     els.cooldownContext.textContent = `${Math.round(state.cooldownMs / 1000)} s`;
     els.identityCount.textContent = String(status.identity_count ?? '—');
+    applyAgent(status.agent_connected === true);
     applyEngine(status.engine_available === true, status.engine_reason);
   } catch (error) {
     setPill(els.enginePill, els.engineStatus, 'API OFFLINE', 'error');
@@ -153,6 +155,13 @@ async function refreshStatus() {
     state.engine = { known: true, available: false };
     setLoopIndicator();
   }
+}
+
+function applyAgent(connected) {
+  const changed = connected !== state.agentConnected;
+  state.agentConnected = connected;
+  els.agentContext.textContent = connected ? 'Connected · owns greetings' : 'Not connected';
+  if (changed) addEvent(connected ? 'Voice agent connected' : 'Voice agent disconnected', connected ? 'Spoken greetings are left to the agent; the browser stays silent.' : 'Browser speech greeting is active again.');
 }
 
 // ---------- recognition loop ----------
@@ -179,8 +188,9 @@ async function tick() {
     state.lastBlob = blob;
     state.frame += 1;
     els.frameInfo.textContent = `FRAME ${String(state.frame).padStart(4, '0')}`;
-    const event = await api.recognize(blob);
+    const { event, agentConnected } = await api.recognize(blob);
     if (session !== state.session || state.paused || state.enrolling) return; // stale result: drop it
+    applyAgent(agentConnected); // per-frame ownership signal, fresher than the 5 s status poll
     handleRecognition(event);
   } catch (error) {
     if (session !== state.session || state.paused) return;
@@ -201,11 +211,19 @@ function handleRecognition(event) {
   setRecognitionValue('Live', false);
 
   const key = transitionKey(event);
-  if (key !== state.lastTransition) {
+  const transitioned = key !== state.lastTransition;
+  if (transitioned) {
     state.lastTransition = key;
     addEvent(view.label, view.message);
   }
-  if (view.state === 'KNOWN' && view.primary?.identity_id) greet(view.primary);
+  if (view.state === 'KNOWN' && view.primary?.identity_id) {
+    if (state.agentConnected) {
+      // The agent owns spoken greetings; log the hand-off once per KNOWN transition, claim nothing about what it says.
+      if (transitioned) addEvent('Greeting left to voice agent', `${view.name} recognized; the browser stays silent.`);
+    } else {
+      greet(view.primary);
+    }
+  }
 }
 
 function handleRecognitionError(error) {
@@ -315,6 +333,7 @@ function stopCamera() {
   addEvent('Vision stopped', 'Camera stream closed. No frames are being processed.');
   renderIdentity(offlineView());
   setLoopIndicator();
+  api.resetPresence().catch(() => { /* best-effort; the backend marks presence stale and expires it after a few seconds */ });
 }
 
 function togglePause() {
@@ -324,6 +343,7 @@ function togglePause() {
     clearTimeout(state.timer);
     camera.clearOverlay();
     state.lastEvent = null;
+    api.resetPresence().catch(() => {}); // no frames while paused: subscribers should see NO_SIGNAL now, not after expiry
     els.pauseLabel.textContent = 'Resume vision';
     setRecognitionValue('Paused', true);
     els.learnButton.disabled = true;
@@ -514,6 +534,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) clearTimeout(state.timer);
   else schedule(0);
 });
+// Page going away with the camera on: presence subscribers should not wait for expiry.
+window.addEventListener('pagehide', () => { if (state.cameraOn) api.resetPresenceBeacon(); });
 window.addEventListener('resize', () => {
   if (state.lastEvent && loopAllowed()) camera.drawFaces(state.lastEvent.faces || []);
 });

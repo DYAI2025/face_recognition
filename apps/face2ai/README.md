@@ -14,7 +14,8 @@ The application is intentionally local-first. Camera frames are processed in mem
 - API: FastAPI on localhost;
 - recognition: adapter over the repository's existing `face_recognition` package;
 - storage: atomic local JSON file;
-- no LLM, cloud service, database, or security authorization in MVP.
+- presence + events: `GET /api/presence`, `GET /api/events` (SSE: `hello`, `presence`, `store`, `heartbeat`), `POST /api/presence/reset` — the contract for agents / Party Mirror; no biometrics on the wire;
+- no LLM, cloud service, database, or security authorization in the recognition app itself. The optional voice agent (`apps/face2ai-agent/`, ADR-002) is a separate process that consumes the events.
 
 ## Development
 

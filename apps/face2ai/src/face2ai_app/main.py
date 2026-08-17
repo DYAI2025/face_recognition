@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import uvicorn
@@ -12,7 +13,9 @@ from face2ai_app.adapters.json_identity_store import JsonIdentityStore
 from face2ai_app.api.routes import router
 from face2ai_app.config import Settings
 from face2ai_app.domain.errors import IdentityStoreCorrupted
+from face2ai_app.services.events import IdentityEventBroker
 from face2ai_app.services.identity_service import IdentityService
+from face2ai_app.services.presence import PresenceTracker
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -29,6 +32,13 @@ def create_app(*, settings: Settings | None = None, engine=None, store=None) -> 
         store=identity_store,
         tolerance=app_settings.match_tolerance,
     )
+    # Presence + events: derived from RecognitionEvents, consumed by agents / Party Mirror.
+    # They never touch matching and never carry frames or encodings.
+    app.state.presence = PresenceTracker(
+        stable_ticks=app_settings.presence_stable_ticks,
+        stale_after=timedelta(seconds=app_settings.presence_stale_seconds),
+    )
+    app.state.events = IdentityEventBroker(buffer_size=app_settings.events_buffer_size)
 
     @app.exception_handler(IdentityStoreCorrupted)
     async def identity_store_corrupted_handler(

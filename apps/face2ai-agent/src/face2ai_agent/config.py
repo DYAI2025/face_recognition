@@ -17,7 +17,9 @@ DEFAULT_OPENROUTER_FALLBACKS = ("google/gemma-4-31b-it:free", "nvidia/nemotron-3
 DEFAULT_LOCAL_TTS_URLS = ("http://127.0.0.1:8880/v1", "http://127.0.0.1:8000/v1")  # kokoro-fastapi, speaches
 DEFAULT_LOCAL_STT_URLS = ("http://127.0.0.1:8000/v1",)  # speaches / faster-whisper-server
 
-LLM_PROVIDERS = ("auto", "openrouter", "groq", "openai", "ollama", "custom")
+LLM_PROVIDERS = ("auto", "hermes", "openrouter", "groq", "openai", "ollama", "custom")
+DEFAULT_HERMES_URL = "http://127.0.0.1:8642/v1"  # Hermes gateway API server (SSH-tunnelled from the VPS)
+DEFAULT_HERMES_SESSION_KEY = "face2ai-voice"
 STT_PROVIDERS = ("auto", "groq", "openai", "local")
 TTS_PROVIDERS = ("auto", "local", "kokoro", "openai")  # kokoro = alias for local
 
@@ -61,7 +63,12 @@ class AgentConfig:
     greet_unknown: bool = True
     announce_multiple: bool = True
     unknown_greeting_cooldown_seconds: int = 120
+    regreet_after_seconds: int = 90  # same known person again only after being away this long
     greeting_style: str = "llm"  # llm = natural reply via LLM, say = fixed sentence via TTS
+
+    hermes_url: str = DEFAULT_HERMES_URL
+    hermes_api_key: str = ""
+    hermes_session_key: str = DEFAULT_HERMES_SESSION_KEY
 
     keys_present: dict[str, bool] = field(default_factory=dict)
 
@@ -91,8 +98,13 @@ class AgentConfig:
             greet_unknown=_flag("FACE2AI_AGENT_GREET_UNKNOWN", True),
             announce_multiple=_flag("FACE2AI_AGENT_ANNOUNCE_MULTIPLE", True),
             unknown_greeting_cooldown_seconds=int(_env("FACE2AI_AGENT_UNKNOWN_COOLDOWN_SECONDS", "120")),
+            regreet_after_seconds=int(_env("FACE2AI_AGENT_REGREET_AFTER_SECONDS", "90")),
             greeting_style=_env("FACE2AI_AGENT_GREETING_STYLE", "llm").lower(),
+            hermes_url=_env("HERMES_API_SERVER_URL", DEFAULT_HERMES_URL).rstrip("/"),
+            hermes_api_key=_env("HERMES_API_SERVER_KEY"),
+            hermes_session_key=_env("HERMES_SESSION_KEY", DEFAULT_HERMES_SESSION_KEY),
             keys_present={
+                "HERMES_API_SERVER_KEY": bool(_env("HERMES_API_SERVER_KEY")),
                 "OPENROUTER_API_KEY": bool(_env("OPENROUTER_API_KEY")),
                 "GROQ_API_KEY": bool(_env("GROQ_API_KEY")),
                 "OPENAI_API_KEY": bool(_env("OPENAI_API_KEY")),
@@ -146,6 +158,8 @@ def resolve_providers(
     if llm == "auto":
         if config.llm_base_url:
             llm = "custom"
+        elif keys.get("HERMES_API_SERVER_KEY"):
+            llm = "hermes"  # your own agent (memory, tools, persona) beats a bare model when it is reachable
         elif keys.get("OPENROUTER_API_KEY"):
             llm = "openrouter"
         elif keys.get("GROQ_API_KEY"):
@@ -157,6 +171,8 @@ def resolve_providers(
                 "No LLM available: set OPENROUTER_API_KEY (free models), GROQ_API_KEY, OPENAI_API_KEY, "
                 "or FACE2AI_AGENT_LLM=ollama / custom with FACE2AI_AGENT_LLM_BASE_URL"
             )
+    if llm == "hermes" and not (keys.get("HERMES_API_SERVER_KEY") or config.llm_api_key):
+        raise ConfigError("FACE2AI_AGENT_LLM=hermes needs HERMES_API_SERVER_KEY (the gateway's API_SERVER_KEY) and the :8642 tunnel")
     if llm == "openrouter" and not (keys.get("OPENROUTER_API_KEY") or config.llm_api_key):
         raise ConfigError("FACE2AI_AGENT_LLM=openrouter needs OPENROUTER_API_KEY")
     if llm == "groq" and not (keys.get("GROQ_API_KEY") or config.llm_api_key):
@@ -166,6 +182,7 @@ def resolve_providers(
     if llm == "custom" and not config.llm_base_url:
         raise ConfigError("FACE2AI_AGENT_LLM=custom needs FACE2AI_AGENT_LLM_BASE_URL")
     llm_model = config.llm_model or {
+        "hermes": "hermes-agent",
         "openrouter": DEFAULT_OPENROUTER_MODEL,
         "groq": "openai/gpt-oss-20b",
         "openai": "gpt-4.1-mini",
@@ -173,9 +190,11 @@ def resolve_providers(
         "custom": "",
     }[llm]
     llm_fallbacks = config.llm_fallback_models or (DEFAULT_OPENROUTER_FALLBACKS if llm == "openrouter" else ())
-    llm_base_url = config.llm_base_url or {"ollama": "http://127.0.0.1:11434/v1"}.get(llm, "")
+    llm_base_url = config.llm_base_url or {"ollama": "http://127.0.0.1:11434/v1", "hermes": config.hermes_url}.get(llm, "")
     if llm == "openrouter" and llm_model.endswith(":free"):
         notes.append("OpenRouter free model: rate-limited; fallbacks configured")
+    if llm == "hermes":
+        notes.append(f"Hermes agent as brain via {llm_base_url} (session key {config.hermes_session_key!r}); slower than a bare model, but with memory + tools")
 
     if not need_audio:
         return ResolvedProviders(

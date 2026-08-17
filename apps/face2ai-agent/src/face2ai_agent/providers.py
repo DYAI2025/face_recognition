@@ -9,6 +9,8 @@ import os
 import warnings
 from typing import Any
 
+import httpx
+
 # LiveKit plugins register themselves on import and must be imported on the main thread,
 # i.e. at module import time — never lazily inside a job. Optional ones degrade gracefully.
 from livekit.plugins import openai, silero  # noqa: F401  (silero registers the VAD plugin)
@@ -35,6 +37,20 @@ def _key_kwargs(explicit: str, env_name: str | None = None) -> dict[str, str]:
 
 
 def build_llm(config: AgentConfig, resolved: ResolvedProviders) -> Any:
+    if resolved.llm == "hermes":
+        # Hermes gateway API server (OpenAI-compatible). The session key scopes Hermes' long-term
+        # memory to this voice channel; the system prompt (presence) is layered on top of his core.
+        import openai as openai_sdk
+
+        key = config.llm_api_key or config.hermes_api_key or os.environ.get("HERMES_API_SERVER_KEY", "")
+        client = openai_sdk.AsyncClient(
+            base_url=resolved.llm_base_url,
+            api_key=key,
+            default_headers={"X-Hermes-Session-Key": config.hermes_session_key},
+            timeout=120.0,
+        )
+        # A full Hermes turn (memory digest, tools, a 550B model) can take 10-30 s: give it room.
+        return openai.LLM(model=resolved.llm_model, client=client, api_key=key, timeout=httpx.Timeout(90.0, connect=10.0))
     if resolved.llm == "openrouter":
         return openai.LLM.with_openrouter(
             model=resolved.llm_model,

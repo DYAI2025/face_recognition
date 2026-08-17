@@ -66,9 +66,27 @@ With `OPENROUTER_API_KEY` set the agent then runs LLM free, STT local, TTS local
 German Piper voice by itself. `check` shows `stt: local ...` / `tts: local ...` and does a real
 TTS→STT round trip (measured: 3.5 s of German audio synthesized in 0.6 s, transcribed in 2 s).
 
+## Hermes as the brain (your own agent instead of a bare model)
+
+Hermes (`hermes-agent`) exposes an OpenAI-compatible API server (`gateway` platform `api_server`,
+port 8642: `API_SERVER_ENABLED=true` + `API_SERVER_KEY` in Hermes' `.env`). Point the voice agent
+at it and every turn is a full Hermes turn — his persona (SOUL), tools and gbrain memory — with the
+live presence report layered on top as an ephemeral system prompt:
+
+```bash
+# in .env — with the key present, `auto` picks hermes
+HERMES_API_SERVER_KEY=<API_SERVER_KEY of the gateway>
+HERMES_API_SERVER_URL=http://127.0.0.1:8642/v1     # on this Mac: SSH tunnel (com.hermes.tunnel9119 also forwards 8642)
+HERMES_SESSION_KEY=face2ai-voice                   # scopes Hermes' long-term memory to this channel
+# FACE2AI_AGENT_LLM_MODEL=hermes-fast              # optional model_routes alias configured in Hermes (faster upstream model)
+```
+
+Trade-off: a Hermes turn takes ~10–15 s on the VPS (large context + memory hook), a bare
+OpenRouter/Groq model ~1–2 s. `FACE2AI_AGENT_LLM=openrouter` switches back at any time.
+
 ## Behaviour
 
-- **KNOWN** transition → greets by name (LLM-phrased; `FACE2AI_AGENT_GREETING_STYLE=say` for a fixed sentence). Same person again only after the server cooldown (`/api/status.greeting_cooldown_seconds`).
+- **KNOWN** transition → greets by name (LLM-phrased; `FACE2AI_AGENT_GREETING_STYLE=say` for a fixed sentence). The same person is greeted again only after being away for `FACE2AI_AGENT_REGREET_AFTER_SECONDS` (90 s; a brief drop-out is not a new arrival) and never within the server cooldown (`/api/status.greeting_cooldown_seconds`).
 - **UNKNOWN** → says hello, says it doesn't know them, mentions "Learn person" (rate-limited, `FACE2AI_AGENT_GREET_UNKNOWN=off` to disable).
 - **MULTIPLE_FACES** → mentions it sees several people and cannot tell who is who.
 - **enrolled** (store event) → welcomes the new person by name.

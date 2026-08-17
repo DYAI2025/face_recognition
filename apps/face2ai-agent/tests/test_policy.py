@@ -20,7 +20,9 @@ def test_known_person_greeted_once_per_cooldown_and_new_person_immediately():
     assert first.fallback_text == "Hallo Ada."
     assert policy.on_transition(known("Ada", "a"), T0 + timedelta(seconds=5)) is None
     assert policy.on_transition(known("Bo", "b"), T0 + timedelta(seconds=6)) is not None
-    again = policy.on_transition(known("Ada", "a"), T0 + timedelta(seconds=16))
+    # Ada was here 6 s ago: switching back to her is not a new arrival (regreet_after_seconds=90)
+    assert policy.on_transition(known("Ada", "a"), T0 + timedelta(seconds=16)) is None
+    again = policy.on_transition(known("Ada", "a", T0 + timedelta(seconds=120)), T0 + timedelta(seconds=120))
     assert again is not None and again.display_name == "Ada"
 
 
@@ -87,3 +89,21 @@ def test_instructions_contain_rules_language_and_live_situation():
     assert "Ada is in front of the camera" in text
     persona = build_instructions(AgentConfig(persona="Du bist ein Pirat."), memory, T0)
     assert persona.startswith("Du bist ein Pirat.")
+
+
+def test_brief_dropout_does_not_regreet_but_a_real_absence_does():
+    policy = GreetingPolicy(AgentConfig(language="de", regreet_after_seconds=90), cooldown_seconds=15)
+
+    def gone(at):
+        return Transition(at=at, from_state="KNOWN", to_state="NO_FACE", identity_id=None, display_name=None, faces=0)
+
+    assert policy.on_transition(known("Ada", "a", T0), T0) is not None                     # arrival
+    assert policy.on_transition(gone(T0 + timedelta(seconds=20)), T0 + timedelta(seconds=20)) is None
+    # back after 30 s (flicker / turned away): no second "Hallo Ada"
+    assert policy.on_transition(known("Ada", "a", T0 + timedelta(seconds=50)), T0 + timedelta(seconds=50)) is None
+    assert policy.on_transition(gone(T0 + timedelta(seconds=60)), T0 + timedelta(seconds=60)) is None
+    # back after 100 s away: greeted again
+    again = policy.on_transition(known("Ada", "a", T0 + timedelta(seconds=160)), T0 + timedelta(seconds=160))
+    assert again is not None and again.kind == "greet_known"
+    # a different person arriving is greeted regardless
+    assert policy.on_transition(known("Bo", "b", T0 + timedelta(seconds=170)), T0 + timedelta(seconds=170)) is not None

@@ -98,3 +98,15 @@ def test_from_env_reads_flags_and_lists(monkeypatch):
     assert config.llm_fallback_models == ("a/b:free", "c/d")
     assert config.greet_unknown is False
     assert config.keys_present["OPENROUTER_API_KEY"] is True
+
+
+def test_hermes_is_preferred_when_its_key_is_present_and_explicit_choice_needs_it():
+    keys = {"HERMES_API_SERVER_KEY": True, "OPENROUTER_API_KEY": True, "GROQ_API_KEY": True, "OPENAI_API_KEY": False}
+    resolved = resolve_providers(cfg(keys_present=keys), probe=SPEACHES)
+    assert resolved.llm == "hermes" and resolved.llm_model == "hermes-agent"
+    assert resolved.llm_base_url == "http://127.0.0.1:8642/v1"
+    assert any("Hermes agent as brain" in n for n in resolved.notes)
+    explicit = resolve_providers(cfg(llm_provider="openrouter", keys_present=keys), probe=SPEACHES)
+    assert explicit.llm == "openrouter"
+    with pytest.raises(ConfigError, match="HERMES_API_SERVER_KEY"):
+        resolve_providers(cfg(llm_provider="hermes"), probe=SPEACHES)

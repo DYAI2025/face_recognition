@@ -37,22 +37,39 @@ class GreetingPolicy:
 
     config: AgentConfig
     cooldown_seconds: int = 15
-    last_known: dict[str, datetime] = field(default_factory=dict)
+    last_known: dict[str, datetime] = field(default_factory=dict)  # last greeting per identity
+    last_seen: dict[str, datetime] = field(default_factory=dict)  # last time a person was in front of the camera
+    present_identity: str | None = None
     last_unknown_at: datetime | None = None
     last_multiple_at: datetime | None = None
+
+    def _note_departure(self, now: datetime) -> None:
+        if self.present_identity is not None:
+            self.last_seen[self.present_identity] = now
+        self.present_identity = None
 
     def on_transition(self, transition: Transition, now: datetime | None = None) -> Prompt | None:
         now = now or datetime.now(timezone.utc)
         lang = self.config.language
         if (now - transition.at).total_seconds() > MAX_TRANSITION_AGE_SECONDS:
             return None  # stale: the person may be long gone
-        if transition.to_state == "KNOWN" and transition.identity_id:
+        arriving = transition.identity_id if transition.to_state == "KNOWN" else None
+        if arriving != self.present_identity:
+            self._note_departure(now)
+            self.present_identity = arriving
+        if arriving:
             if not self.config.greet_known:
                 return None
-            last = self.last_known.get(transition.identity_id)
+            last = self.last_known.get(arriving)
             if last is not None and (now - last).total_seconds() < self.cooldown_seconds:
                 return None
-            self.last_known[transition.identity_id] = now
+            # A brief drop-out (recognition flicker, turned away, tab hidden for a moment) is not a
+            # new arrival: greet again only after the person was really away for a while.
+            seen = self.last_seen.get(arriving)
+            if seen is not None and (now - seen).total_seconds() < self.config.regreet_after_seconds:
+                self.last_seen[arriving] = now
+                return None
+            self.last_known[arriving] = now
             name = transition.display_name or "there"
             return Prompt(
                 kind="greet_known",
@@ -108,6 +125,7 @@ class GreetingPolicy:
         if change.kind == "enrolled" and change.display_name:
             if change.identity_id:
                 self.last_known[change.identity_id] = now
+                self.present_identity = change.identity_id
             return Prompt(
                 kind="welcome_enrolled",
                 display_name=change.display_name,

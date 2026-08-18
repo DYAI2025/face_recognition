@@ -139,6 +139,13 @@ export function axisPercent(value) {
   return Math.round(Math.min(1, Math.max(-1, value)) * 50 + 50);
 }
 
+/** Signed two-decimal label for a valence/arousal axis ("+0.60", "-0.50"); -0.004 is "+0.00", never "-0.00"; null when there is no number. */
+export function formatAxis(value) {
+  if (!Number.isFinite(value)) return null;
+  const v = Number(value.toFixed(2)) + 0; // + 0 turns -0 into 0 so the sign check below is honest
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
+}
+
 /**
  * Event-stream policy for mood entries. Per-frame hints flicker; the log is an evidence layer,
  * so a hedged label is logged only once it has held for `stableTicks` consecutive frames and

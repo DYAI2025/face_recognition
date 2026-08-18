@@ -4,7 +4,7 @@
 import * as api from './api.js';
 import { CameraController } from './camera.js';
 import { decryptText, installAtmosphere, installMagnets, installSpotlights } from './effects.js';
-import { axisPercent, describeCameraError, describeEvent, describeExpression, offlineView, shouldGreet, trackMood, transitionKey } from './model.js';
+import { axisPercent, describeCameraError, describeEvent, describeExpression, formatAxis, offlineView, shouldGreet, trackMood, transitionKey } from './model.js';
 
 const RECOGNIZE_INTERVAL_MS = 450;
 const RECOGNIZE_ERROR_BACKOFF_MS = 1500;
@@ -124,7 +124,7 @@ function setExpressionTile(text, tone, described = null) {
   for (const [axis, fill, num] of [[described.valence, els.valenceFill, els.valenceValue], [described.arousal, els.arousalFill, els.arousalValue]]) {
     const pct = axisPercent(axis);
     fill.style.width = pct === null ? '0%' : `${pct}%`;
-    num.textContent = pct === null ? '—' : `${axis > 0 ? '+' : ''}${axis.toFixed(2)}`;
+    num.textContent = formatAxis(axis) ?? '—';
   }
 }
 

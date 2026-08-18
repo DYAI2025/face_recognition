@@ -55,7 +55,10 @@ of face imagery into a tool whose promise is "nothing leaves the Mac".
 5. **Wire discipline**: `Expression` carries labels, scores in 0..1, valence/arousal in -1..1, named
    blendshape floats (only ≥ 0.2, 2 decimals) and three pose angles. **No landmarks, no crops, no
    pixels, no embeddings** — the model forbids it by construction. `MoodTransition` is coarser
-   still: label, names, timestamp, two rounded scalars. Nothing about expression is persisted.
+   still: label, names, timestamp, two rounded scalars. Face2AI itself persists nothing about
+   expression; the Hermes plugin mirrors the *current* presence snapshot (state, name, coarse
+   mood/valence/arousal) into its plugin state file for the dashboard process — overwritten, no
+   history.
 6. **Hedged wording everywhere.** The browser shell (English) says "looks happy" and labels the tile
    "a hint, not a fact"; the voice agent and the Hermes plugin (German) say "wirkt fröhlich (…) –
    nur ein Hinweis aus dem Gesichtsausdruck, keine Tatsache." Never "is happy", never "erkannt",
@@ -97,10 +100,14 @@ on other people without their consent — the same posture ADR-001 takes for enr
   ["numpy==2.3.5"]` in `pyproject.toml` keeps the project resolvable; the FaceLandmarker CPU
   delegate runs fine on numpy 2.3.5 empirically. Remove the override when mediapipe supports
   numpy 2 officially.
-- Model assets: `scripts/fetch-expression-models.sh` downloads `face_landmarker.task` (3.7 MB,
-  float16) into `FACE2AI_EXPRESSION_MODELS_DIR` (default `FACE2AI_DATA_DIR/models`, i.e.
-  `~/.face2ai/models`) atomically. EmotiEffLib downloads `enet_b0_8_va_mtl.onnx` on first use
-  into its own cache (one network round trip, once).
+- Model assets: `scripts/fetch-expression-models.sh` downloads BOTH assets atomically and
+  idempotently: `face_landmarker.task` (3.7 MB, float16) into `FACE2AI_EXPRESSION_MODELS_DIR`
+  (default `FACE2AI_DATA_DIR/models`, i.e. `~/.face2ai/models`) and EmotiEffLib's
+  `enet_b0_8_va_mtl.onnx` (16 MB, from the EmotiEffLib GitHub repo) into `~/.emotiefflib/` — the
+  exact path emotiefflib 1.1.1 resolves (`os.path.expanduser("~")/.emotiefflib/<model>.onnx`; it
+  has no local-path option). Startup does not touch the network: the adapter checks both files in
+  `__init__` and reports `expression_available:false` with the missing path instead of letting
+  emotiefflib run its own downloader.
 - Timing, adapter alone (one face, full-frame decode + landmarker + EmotiEffLib,
   `examples/obama.jpg`, 910×1137): first measurement `analyze` ~146 ms cold, ~77 ms warm; a
   later warm run ~84 ms / ~27 ms — well inside the browser's 450 ms loop. Component figures
@@ -130,8 +137,11 @@ on other people without their consent — the same posture ADR-001 takes for enr
 - (+) The default install (no extra) behaves exactly as before: `expression_available:false`,
   toggle disabled, `faces[].expression` null, no `mood` events. CI stays light.
 - (−) An optional dependency set of ≈ 0.75 GB installed (mediapipe pulls jax/jaxlib, opencv,
-  matplotlib) with a version pin and a numpy override that must be revisited; a first-use model
-  download by EmotiEffLib.
+  matplotlib) with a version pin and a numpy override that must be revisited; two model files
+  that must be fetched by the script before the engine reports available (no startup download).
+- Face2AI itself persists nothing about expression; the Hermes plugin mirrors the *current*
+  presence snapshot (state, name, coarse mood/valence/arousal) into its plugin state file for the
+  dashboard process — overwritten, no history.
 - Shell and `/assets/*` are served with `Cache-Control: no-cache` (ETag revalidation) since
   2026-08-18 — a redeploy must never pair a fresh `app.js` with a heuristically cached `model.js`
   (this broke the shell once during verification).

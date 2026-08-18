@@ -8,6 +8,8 @@ import pytest
 
 from face2ai_app.adapters.mediapipe_expression import (
     MediaPipeExpressionEngine,
+    emotiefflib_model_path,
+    landmark_bbox,
     compact_blendshapes,
     crop_with_margin,
     match_faces,
@@ -79,6 +81,21 @@ def test_match_faces_assigns_each_landmark_face_once():
     assert match_faces(boxes, []) == [None, None, None]
 
 
+class _Pt:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+
+def test_landmark_bbox_scales_to_pixels_and_degenerates_for_empty_set():
+    assert landmark_bbox([_Pt(0.25, 0.5), _Pt(0.75, 0.6)], 400, 200) == (100.0, 100.0, 300.0, 120.0)
+    # an empty landmark set (a malformed result) must not raise and must never match a face —
+    # but it keeps its index so blendshapes/pose of the other faces stay aligned
+    empty = landmark_bbox([], 400, 200)
+    assert empty == (0.0, 0.0, 0.0, 0.0)
+    boxes = [FaceBox(top=100, right=400, bottom=300, left=200), FaceBox(top=0, right=50, bottom=50, left=0)]
+    assert match_faces(boxes, [empty, (0, 0, 50, 50)]) == [None, 1]
+
+
 def test_compact_blendshapes_filters_and_rounds():
     assert compact_blendshapes([("mouthSmileLeft", 0.951), ("browDownLeft", 0.05), ("_neutral", 0.3)]) == {
         "mouthSmileLeft": 0.95
@@ -108,6 +125,31 @@ def test_engine_is_unavailable_without_asset(tmp_path):
     reason = engine.availability_reason
     assert isinstance(reason, str) and ("missing model asset" in reason or "not installed" in reason)
     assert engine.analyze(b"x", [FaceBox(top=0, right=10, bottom=10, left=0)]) == [None]
+
+
+def test_engine_is_unavailable_without_emotiefflib_model_and_never_downloads(tmp_path, monkeypatch):
+    """With the extra installed but emotiefflib's cached ONNX missing the engine must report why and must not
+    trigger emotiefflib's own GitHub download (startup is offline by contract)."""
+    pytest.importorskip("mediapipe")
+    pytest.importorskip("emotiefflib")
+    import urllib.request
+
+    def _no_network(*args, **kwargs):  # pragma: no cover - reached only on a regression
+        raise AssertionError(f"network access attempted: urlretrieve{args}")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", _no_network)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))  # emotiefflib and the adapter both resolve ~ via os.path.expanduser
+    assert emotiefflib_model_path() == home / ".emotiefflib" / "enet_b0_8_va_mtl.onnx"
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "face_landmarker.task").write_bytes(b"")  # present, so the check under test is the emotiefflib one
+    engine = MediaPipeExpressionEngine(models)
+    assert engine.available is False
+    reason = engine.availability_reason
+    assert isinstance(reason, str) and "EmotiEffLib" in reason and "fetch-expression-models.sh" in reason
+    assert not (home / ".emotiefflib").exists()
 
 
 def test_engine_logs_first_failure_at_warning_then_debug(tmp_path, caplog):

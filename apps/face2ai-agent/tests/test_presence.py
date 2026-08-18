@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from face2ai_agent.presence import PresenceMemory, StoreChange, Transition, parse_sse
+from face2ai_agent.presence import MOOD_WORDS, PresenceMemory, StoreChange, Transition, parse_sse
 
 T0 = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 
@@ -171,3 +171,12 @@ async def test_presence_loop_dispatches_mood_events():
     assert seen == [("hello", False), ("mood", True), ("mood", False)]
     assert memory.current.mood == "Happiness" and memory.current.state == "KNOWN"
     assert len(memory.history) == 0  # a mood is not a presence transition
+
+
+def test_mood_word_tables_cover_exactly_the_eight_wire_labels():
+    """Drift guard: both languages must translate exactly the 8 EmotiEffLib labels Face2AI puts on the wire
+    (domain.models.EMOTIONS) — an unknown label would fall back to the raw English token in a German sentence."""
+    expected = {"Anger", "Contempt", "Disgust", "Fear", "Happiness", "Neutral", "Sadness", "Surprise"}
+    assert set(MOOD_WORDS["de"]["labels"]) == set(MOOD_WORDS["en"]["labels"]) == expected
+    for words in MOOD_WORDS.values():
+        assert all(isinstance(v, str) and v for v in words["labels"].values())

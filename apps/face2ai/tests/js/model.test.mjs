@@ -6,6 +6,7 @@ import {
   describeCameraError,
   describeEvent,
   describeExpression,
+  formatAxis,
   offlineView,
   projectBox,
   shouldGreet,
@@ -183,6 +184,15 @@ test('describeExpression tolerates unknown labels, unknown languages and missing
   const full = describeExpression({ dominant: 'Neutral', valence: -0.25, arousal: 'x' });
   assert.equal(full.valence, -0.25);
   assert.equal(full.arousal, null);
+});
+
+test('formatAxis prints a signed two-decimal label and never a negative zero', () => {
+  assert.equal(formatAxis(-0.004), '+0.00');
+  assert.equal(formatAxis(0.6), '+0.60');
+  assert.equal(formatAxis(-0.5), '-0.50');
+  assert.equal(formatAxis(0), '+0.00');
+  assert.equal(formatAxis(null), null);
+  assert.equal(formatAxis(NaN), null);
 });
 
 test('axisPercent maps -1..1 onto 0..100 and clamps', () => {

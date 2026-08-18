@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 from collections.abc import Sequence
 from io import BytesIO
@@ -22,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 MODEL_ASSET = "face_landmarker.task"
 EMOTIEFF_MODEL = "enet_b0_8_va_mtl"
+# emotiefflib 1.1.1 has no local-path option: EmotiEffLibRecognizerOnnx resolves the model via
+# utils.get_model_path_onnx -> os.path.expanduser("~")/.emotiefflib/<model>.onnx and would download it
+# from GitHub when missing. We never let that happen at startup: the fetch script puts the file there.
+EMOTIEFF_CACHE_DIR = ".emotiefflib"
 MIN_IOU = 0.2
 BLENDSHAPE_THRESHOLD = 0.2
 CROP_MARGIN = 0.2
@@ -31,6 +36,21 @@ LandmarkBox = tuple[float, float, float, float]
 
 
 # ----------------------------------------------------------------------------- pure helpers
+
+
+def emotiefflib_model_path() -> Path:
+    """Where emotiefflib expects its ONNX file (same derivation as ``emotiefflib.utils.download_model``)."""
+    return Path(os.path.expanduser("~")) / EMOTIEFF_CACHE_DIR / f"{EMOTIEFF_MODEL}.onnx"
+
+
+def landmark_bbox(lms: Sequence, width: int, height: int) -> LandmarkBox:
+    """(left, top, right, bottom) in pixels of one normalized landmark set; a degenerate (0, 0, 0, 0)
+    box for an empty set so it can never match a face (IoU 0) without shifting indices."""
+    if not lms:
+        return (0.0, 0.0, 0.0, 0.0)
+    xs = [p.x for p in lms]
+    ys = [p.y for p in lms]
+    return (min(xs) * width, min(ys) * height, max(xs) * width, max(ys) * height)
 
 
 def _iou(box: FaceBox, lm: LandmarkBox) -> float:
@@ -115,7 +135,10 @@ def crop_with_margin(arr: np.ndarray, box: FaceBox, margin: float = CROP_MARGIN)
 class MediaPipeExpressionEngine:
     """Blendshapes + head pose from MediaPipe Face Landmarker, emotions + valence/arousal from EmotiEffLib.
 
-    Lazy, CPU only; unavailable (never crashing) when the extra or the model asset is missing.
+    Both models are loaded in ``__init__`` (imports, file checks, session creation), CPU only, offline:
+    the two assets (``face_landmarker.task`` in ``models_dir`` and emotiefflib's ``enet_b0_8_va_mtl.onnx``
+    in ``~/.emotiefflib``) must be fetched up front by ``scripts/fetch-expression-models.sh``. Startup never
+    touches the network; the engine is unavailable (never crashing) when the extra or an asset is missing.
     """
 
     def __init__(self, models_dir: Path) -> None:
@@ -137,6 +160,11 @@ class MediaPipeExpressionEngine:
         asset = Path(models_dir) / MODEL_ASSET
         if not asset.exists():
             self._reason = f"missing model asset {asset} (run scripts/fetch-expression-models.sh)"
+            return
+        emotieff_model = emotiefflib_model_path()
+        if not emotieff_model.is_file():
+            # Checked before constructing the recognizer: emotiefflib would otherwise download it now.
+            self._reason = f"missing EmotiEffLib model {emotieff_model} (run scripts/fetch-expression-models.sh)"
             return
         try:
             base = mp_python.BaseOptions(model_asset_path=str(asset), delegate=mp_python.BaseOptions.Delegate.CPU)
@@ -177,11 +205,14 @@ class MediaPipeExpressionEngine:
             return [None for _ in boxes]
 
         h, w = arr.shape[:2]
-        lm_boxes: list[LandmarkBox] = [
-            (min(p.x for p in lms) * w, min(p.y for p in lms) * h, max(p.x for p in lms) * w, max(p.y for p in lms) * h)
-            for lms in result.face_landmarks
-        ]
-        matches = match_faces(boxes, lm_boxes)
+        try:
+            lm_boxes = [landmark_bbox(lms, w, h) for lms in result.face_landmarks]
+            matches = match_faces(boxes, lm_boxes)
+        except Exception as exc:
+            # A malformed landmark result must not drop the emotion hint for every face: continue without
+            # blendshapes/pose (idx None) instead of failing the whole frame.
+            self._log_failure("frame", exc)
+            matches = [None] * len(boxes)
         return [self._analyze_face(arr, result, box, idx) for box, idx in zip(boxes, matches, strict=True)]
 
     def _analyze_face(self, arr: np.ndarray, result, box: FaceBox, idx: int | None) -> Expression | None:

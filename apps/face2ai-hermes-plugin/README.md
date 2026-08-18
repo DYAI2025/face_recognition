@@ -33,7 +33,10 @@ One installable folder (`face2ai/`), two halves, both opt-in:
   "Ben wirkt fröhlich (Valenz +0.6, Erregung +0.1) – nur ein Hinweis aus dem Gesichtsausdruck, keine Tatsache." /
   "Ben looks happy (valence +0.6, arousal +0.1) — only a hint from facial expression, not a fact." The `[face2ai]`
   line, `presence_now`, `/presence`, the persisted snapshot (dashboard API) and the desktop pane all carry it; a mood
-  frame is never a transition, never an announcement and never gates anything. The system-prompt section tells
+  frame is never a transition, never an announcement and never gates anything. Face2AI itself persists nothing about
+  expression; this plugin mirrors the *current* presence snapshot (state, name, coarse mood/valence/arousal) into its
+  plugin state file for the dashboard process — overwritten, no history (the snapshot's `history` holds only the last
+  10 presence transitions: states, names, timestamps — never a mood). The system-prompt section tells
   Hermes to treat it as a guess — never state it as a fact, never psychoanalyse or probe.
 - **Static explanation** in the system prompt: what the `[face2ai]` line means, best-effort, never guess names, never authentication, mood hints are guesses ("wirkt …"), never facts.
 - **Optional proactive**: `announce_arrivals: true` + `plugins.entries.face2ai.allow_gateway_injection: true` →

@@ -39,13 +39,14 @@ The `face_recognition` dependency is resolved from the repository root through `
 
 ## Expression hints (opt-in)
 
-Stage 1 of the expression engine (ADR-003) reads facial expression **locally** and only when asked. Nothing about it is stored, nothing leaves the machine, and it never gates recognition, enrollment or the greeting. It is a hint about how a face *appears* to a model — the UI says "looks happy", the German consumers say "wirkt fröhlich" — never a fact, never a lie detector. "Micro-expressions" in the strict (involuntary, < 500 ms) sense are out of scope; Stage 1 delivers expression + intensity + head pose per frame plus a debounced mood.
+Stage 1 of the expression engine (ADR-003) reads facial expression **locally** and only when asked. Face2AI itself persists nothing about expression (the Hermes plugin mirrors the *current* presence snapshot — state, name, coarse mood/valence/arousal — into its plugin state file for the dashboard process: overwritten, no history), nothing leaves the machine, and it never gates recognition, enrollment or the greeting. It is a hint about how a face *appears* to a model — the UI says "looks happy", the German consumers say "wirkt fröhlich" — never a fact, never a lie detector. "Micro-expressions" in the strict (involuntary, < 500 ms) sense are out of scope; Stage 1 delivers expression + intensity + head pose per frame plus a debounced mood.
 
-Install and fetch the model asset (≈ 0.75 GB installed — mediapipe pulls jax/jaxlib, opencv, matplotlib; EmotiEffLib downloads its ONNX model into its own cache on first use):
+Install and fetch both model assets (≈ 0.75 GB installed — mediapipe pulls jax/jaxlib, opencv, matplotlib). The fetch script downloads BOTH files up front — the MediaPipe landmarker and EmotiEffLib's ONNX model into the exact cache path emotiefflib expects — so startup never touches the network; if either file is missing the engine reports `expression_available:false` with the path and this script in the reason instead of downloading anything:
 
 ```bash
 uv sync --project apps/face2ai --group dev --extra recognition --extra expression
 bash apps/face2ai/scripts/fetch-expression-models.sh      # face_landmarker.task (3.7 MB) → $FACE2AI_EXPRESSION_MODELS_DIR
+                                                          # enet_b0_8_va_mtl.onnx (16 MB)  → ~/.emotiefflib/
 ```
 
 `mediapipe` is pinned to 0.10.21 (1.0.1 aborts on macOS in `DrishtiMetalHelper`; the adapter uses the CPU delegate) and declares `numpy<2`, so `pyproject.toml` overrides numpy to 2.3.5 — verified working on the M1. Without the extra everything degrades cleanly: `expression_available:false` with a reason, toggle disabled, `faces[].expression` null, no `mood` events.

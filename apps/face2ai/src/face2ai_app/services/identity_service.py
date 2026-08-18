@@ -120,6 +120,7 @@ class IdentityService:
             )
             self._expression_warned = True
             return
+        # non-strict on purpose: a short/long list from a misbehaving engine must never raise here
         for observation, expression in zip(observations, expressions):
             observation.expression = expression
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from face2ai.presence import PresenceStore, SseFrame, context_line, describe, parse_sse  # noqa: E402
+from face2ai.presence import MOOD_WORDS, PresenceStore, SseFrame, context_line, describe, parse_sse  # noqa: E402
 
 T0 = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
 
@@ -120,3 +120,12 @@ def test_presence_transition_starts_a_fresh_presence_without_mood_and_unknown_us
     store.apply(SseFrame("heartbeat", {"presence": {"state": "UNKNOWN", "faces": 1, "mood": "Surprise", "valence": 0.2, "arousal": 0.7}}), now=T0)
     assert "Die Person wirkt überrascht" in describe(store, now=T0)
     assert "The person looks surprised" in describe(store, now=T0, language="en")
+
+
+def test_mood_word_tables_cover_exactly_the_eight_wire_labels():
+    """Drift guard: both languages must translate exactly the 8 EmotiEffLib labels Face2AI puts on the wire
+    (domain.models.EMOTIONS) — an unknown label would fall back to the raw English token in a German sentence."""
+    expected = {"Anger", "Contempt", "Disgust", "Fear", "Happiness", "Neutral", "Sadness", "Surprise"}
+    assert set(MOOD_WORDS["de"]["labels"]) == set(MOOD_WORDS["en"]["labels"]) == expected
+    for words in MOOD_WORDS.values():
+        assert all(isinstance(v, str) and v for v in words["labels"].values())

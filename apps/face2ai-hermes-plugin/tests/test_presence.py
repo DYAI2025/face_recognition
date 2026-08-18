@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from face2ai.presence import ACTION_WORDS, MOOD_WORDS, PresenceStore, SseFrame, action_sentence, context_line, describe, parse_sse  # noqa: E402
+from face2ai.presence import ACTION_WORDS, MOOD_WORDS, PresenceStore, SseFrame, action_sentence, clock, context_line, describe, mood_sentence, parse_sse  # noqa: E402
 
 T0 = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
 
@@ -162,11 +162,22 @@ def test_action_sentence_is_hedged():
     assert action_sentence({"action": "smile", "duration_ms": 6000}, language="de") == "anhaltendes Lächeln (6.0 s)"
     assert action_sentence({"action": "smile", "duration_ms": 6000}, language="en") == "held smile (6.0 s)"
     assert action_sentence({"action": "lip_press", "duration_ms": 1000}, language="en") == "brief lip press (1.0 s)"
-    assert action_sentence({"action": "eyes_wide", "duration_ms": 4999}, language="de") == "Augen weit (5.0 s)"
+    # The qualifier follows the *printed* number: 4999 ms prints "5.0 s", so it reads "anhaltendes" —
+    # printing "Augen weit (5.0 s)" next to "anhaltendes Augen weit (5.0 s)" would be two phrasings for
+    # one visible value (this line pinned that pair before; the value below comes from the implementation).
+    assert action_sentence({"action": "eyes_wide", "duration_ms": 4999}, language="de") == "anhaltendes Augen weit (5.0 s)"
+    assert action_sentence({"action": "eyes_wide", "duration_ms": 4949}, language="de") == "Augen weit (4.9 s)"
+    assert action_sentence({"action": "smile", "duration_ms": 1049}, language="en") == "brief smile (1.0 s)"
+    assert action_sentence({"action": "smile", "duration_ms": 1051}, language="en") == "smile (1.1 s)"
     assert action_sentence({"action": "smile", "duration_ms": "soon"}, language="de") == "Lächeln"  # non-numeric duration → no parentheses
+    assert action_sentence({"action": "smile", "duration_ms": float("nan")}, language="de") == "Lächeln"  # never "(nan s)"
+    assert action_sentence({"action": "smile", "duration_ms": float("inf")}, language="de") == "Lächeln"  # never "(inf s)"
     assert action_sentence({"action": "smile"}, language="en") == "smile"
     assert action_sentence({}, language="de") == "" and action_sentence(None, language="en") == ""  # never raises
     assert action_sentence({"action": "eye_squint", "duration_ms": 900}, language="fr") == "brief eye squint (0.9 s)"  # unknown language → en
+    assert action_sentence({"action": "smile", "duration_ms": 900}, language=None) == "kurzes Lächeln (0.9 s)"  # "never raises" includes None
+    assert mood_sentence("Happiness", 0.6, 0.1, language=None).startswith("Die Person wirkt fröhlich")
+    assert mood_sentence("Happiness", float("nan"), float("inf")) == "Die Person wirkt fröhlich – nur ein Hinweis aus dem Gesichtsausdruck, keine Tatsache."
 
 
 def test_action_word_tables_cover_exactly_the_eight_wire_actions():
@@ -185,3 +196,42 @@ def test_describe_does_not_speak_actions_into_context():
     text = describe(store, now=T0)
     assert text.startswith("Ben steht vor der Kamera") and "Lächeln" not in text and "smile" not in text
     assert "smile" not in describe(store, now=T0, language="en")
+
+
+def test_snapshot_entries_are_copies_the_caller_cannot_write_back_into_the_store():
+    """snapshot() goes to the Hermes tool layer and into the plugin state file; a consumer that
+    redacts or normalises an entry in place must not rewrite this store's ring buffer."""
+    store = PresenceStore()
+    store.apply(SseFrame("hello", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ben"}}), now=T0)
+    store.apply(SseFrame("mood", {"sequence": 1, "at": T0.isoformat(), "from_mood": None, "to_mood": "Happiness"}), now=T0)
+    store.apply(SseFrame("action", {"sequence": 2, "at": T0.isoformat(), "action": "smile", "duration_ms": 900}), now=T0)
+    snap = store.snapshot()
+    assert snap["actions"][-1] is not list(store.actions)[-1] and snap["moods"][-1] is not list(store.moods)[-1]
+    snap["actions"][-1]["action"] = "MUTATED"
+    snap["moods"][-1]["to_mood"] = "MUTATED"
+    assert list(store.actions)[-1]["action"] == "smile" and list(store.moods)[-1]["to_mood"] == "Happiness"
+    assert store.snapshot()["actions"][-1]["action"] == "smile"
+
+
+def test_timeline_cleared_makes_the_mirror_forget_with_face2ai():
+    """`POST /api/presence/reset` empties Face2AI's affect history; the `timeline_cleared` frame is how
+    that forget reaches this mirror. A NO_SIGNAL transition is not the signal (an ordinary expiry
+    publishes one and keeps the history), and the forget is not a presence change."""
+    store = PresenceStore()
+    store.apply(SseFrame("hello", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ben"}, "last_sequence": 0}), now=T0)
+    store.apply(SseFrame("mood", {"sequence": 1, "at": T0.isoformat(), "from_mood": None, "to_mood": "Happiness"}), now=T0)
+    store.apply(SseFrame("action", {"sequence": 2, "at": T0.isoformat(), "action": "smile", "duration_ms": 900}), now=T0)
+    assert store.snapshot()["moods"] and store.snapshot()["actions"]
+    assert store.apply(SseFrame("timeline_cleared", {"sequence": 3, "at": T0.isoformat()}), now=T0) is None
+    snap = store.snapshot()
+    assert (snap["moods"], snap["actions"]) == ([], [])
+    assert len(store.moods) == 0 and len(store.actions) == 0  # the ring buffers, not only the snapshot
+    assert snap["presence"]["state"] == "KNOWN" and snap["connected"] is True  # forgetting is not a presence change
+    assert len(store.history) == 0
+
+
+def test_clock_prints_local_wall_time_and_tolerates_junk():
+    """Face2AI timestamps are UTC and describe() prints local times: one reply must not mix two clocks."""
+    assert clock(T0.isoformat()) == T0.astimezone().strftime("%H:%M:%S")
+    assert clock("2026-08-18T12:00:03Z") == datetime(2026, 8, 18, 12, 0, 3, tzinfo=timezone.utc).astimezone().strftime("%H:%M:%S")
+    assert clock(None) == "" and clock("") == "" and clock("nope") == "" and clock(12) == ""

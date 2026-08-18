@@ -11,7 +11,7 @@
  */
 export function subscribeEvents({ onMood, onAction, onOpen, onError } = {}, url = '/api/events?role=browser') {
   if (typeof EventSource !== 'function') {
-    onError?.();
+    onError?.({ unsupported: true }); // nothing will reconnect here: the caller must not promise that it will
     return () => {};
   }
   const source = new EventSource(url);
@@ -19,6 +19,6 @@ export function subscribeEvents({ onMood, onAction, onOpen, onError } = {}, url 
   source.addEventListener('mood', (e) => { const d = parse(e); if (d) onMood?.(d); });
   source.addEventListener('action', (e) => { const d = parse(e); if (d) onAction?.(d); });
   source.onopen = () => onOpen?.();
-  source.onerror = () => onError?.();
+  source.onerror = () => onError?.({ unsupported: false });
   return () => source.close();
 }

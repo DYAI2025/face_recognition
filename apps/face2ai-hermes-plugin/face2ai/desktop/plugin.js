@@ -5,28 +5,53 @@
 // Nothing biometric ever reaches this UI — Face2AI's stream carries states, names, counts, timestamps,
 // a hedged mood hint ("wirkt …" — a best-effort guess from facial expression, never a fact) and completed
 // facial actions ("kurzes Lächeln (0.9 s)" — expression dynamics at ~0.6 s resolution, no micro-expressions).
-// The pane adds a valence sparkline from Face2AI's in-memory timeline (`ctx.rest('/timeline?seconds=600')`),
-// bounded and cleared on presence reset/restart — nothing is stored long-term anywhere.
+// The pane adds a valence sparkline from Face2AI's in-memory timeline (`ctx.rest('/timeline?seconds=600')`,
+// narrowed to the person in front of the camera and fetched on its own slow cadence, not on every poll),
+// bounded and cleared on presence reset/restart — a `timeline_cleared` frame clears this mirror with it,
+// and so does the disposer; nothing is stored long-term anywhere.
 import { PALETTE_AREA, PANES_AREA, STATUSBAR_AREAS, haptic } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const POLL_MS = 4000
 const TIMELINE_SECONDS = 600
+// The timeline is the expensive call (up to 2000 samples ≈ 320 KB) and it feeds a 240 px sparkline, so it
+// runs on its own slow cadence instead of every presence poll — and re-runs at once when the person changes.
+const TIMELINE_MIN_INTERVAL_MS = 20000
 const EMPTY_TIMELINE = { seconds: TIMELINE_SECONDS, samples: [], moods: [], actions: [] }
+const IDLE_PRESENCE = { source: 'none', presence: { state: 'NO_SIGNAL' }, connected: false }
 const listeners = new Set()
-let latest = { source: 'none', presence: { state: 'NO_SIGNAL' }, connected: false }
+let latest = IDLE_PRESENCE
 let history = []
 let moods = [] // last mood changes (`to_mood` set) as they came off the wire, newest last
 let actions = [] // last completed facial actions, newest last
 let timeline = EMPTY_TIMELINE // Face2AI's in-memory affect history (samples for the sparkline)
+let timelineAt = 0 // when the timeline was last fetched
+let timelineIdentity = null // whose timeline it is (null = everyone)
 let pluginCtx = null
 
 function publish() {
   for (const fn of listeners) fn({ latest, history, moods, actions, timeline })
 }
 
-async function refresh() {
+/** Face2AI's affect history for `identityId` (null = everyone); skipped unless it is stale, for someone else, or forced. */
+async function refreshTimeline(identityId, { force = false, now = Date.now() } = {}) {
+  if (!pluginCtx) return
+  const who = identityId || null
+  if (!force && who === timelineIdentity && now - timelineAt < TIMELINE_MIN_INTERVAL_MS) return
+  timelineAt = now
+  timelineIdentity = who
+  // Filtering server-side keeps another person's samples off the wire entirely, not just out of the drawing.
+  const query = `/timeline?seconds=${TIMELINE_SECONDS}${who ? `&identity_id=${encodeURIComponent(who)}` : ''}`
+  try {
+    const t = await pluginCtx.rest(query)
+    timeline = t && Array.isArray(t.samples) ? t : EMPTY_TIMELINE
+  } catch (error) {
+    timeline = { ...EMPTY_TIMELINE, error: String(error && error.message ? error.message : error) }
+  }
+}
+
+async function refresh({ forceTimeline = false } = {}) {
   if (!pluginCtx) return
   try {
     latest = await pluginCtx.rest('/presence')
@@ -37,12 +62,7 @@ async function refresh() {
   } catch (error) {
     latest = { source: 'error', error: String(error && error.message ? error.message : error), presence: { state: 'NO_SIGNAL' }, connected: false }
   }
-  try {
-    const t = await pluginCtx.rest(`/timeline?seconds=${TIMELINE_SECONDS}`)
-    timeline = t && Array.isArray(t.samples) ? t : EMPTY_TIMELINE
-  } catch (error) {
-    timeline = { ...EMPTY_TIMELINE, error: String(error && error.message ? error.message : error) }
-  }
+  await refreshTimeline((latest && latest.presence && latest.presence.identity_id) || null, { force: forceTimeline })
   publish()
 }
 
@@ -62,6 +82,12 @@ function onFrame(frame) {
   } else if (event === 'action' && data) {
     // A completed facial action: history only — never touches presence, never a reaction.
     actions = [...actions.slice(-9), data]
+  } else if (event === 'timeline_cleared') {
+    // The user reset presence in Face2AI, which forgot its affect history: this mirror forgets too.
+    moods = []
+    actions = []
+    timeline = EMPTY_TIMELINE
+    timelineAt = 0
   } else if (event === 'lost') {
     latest = { ...latest, connected: false, source: 'lost', error: data && data.error }
   }
@@ -117,8 +143,11 @@ function actionLabel(a) {
   if (!a || typeof a.action !== 'string' || !a.action) return ''
   const word = Object.hasOwn(ACTION_LABELS, a.action) ? ACTION_LABELS[a.action] : a.action.toLowerCase().replaceAll('_', ' ')
   const ms = typeof a.duration_ms === 'number' && Number.isFinite(a.duration_ms) ? a.duration_ms : null
-  const qualifier = ms === null ? '' : ms <= 1000 ? 'kurzes ' : ms >= 5000 ? 'anhaltendes ' : ''
-  return `${qualifier}${word}${ms === null ? '' : ` (${(ms / 1000).toFixed(1)} s)`}`
+  if (ms === null) return word
+  const shown = (ms / 1000).toFixed(1) // the number the reader sees …
+  const shownMs = parseFloat(shown) * 1000 // … and the qualifier follows it: 4999 ms is not "Lächeln (5.0 s)"
+  const qualifier = shownMs <= 1000 ? 'kurzes ' : shownMs >= 5000 ? 'anhaltendes ' : ''
+  return `${qualifier}${word} (${shown} s)`
 }
 
 /** "wirkt fröhlich" for a mood transition (`to_mood`); '' when the mood ended. */
@@ -138,9 +167,8 @@ function sparklinePoints(samples, w = SPARK_W, h = SPARK_H) {
   return values.map((v, i) => `${((i / (n - 1)) * w).toFixed(1)},${(((1 - v) / 2) * h).toFixed(1)}`).join(' ')
 }
 
-/** Plain SVG (no JSX): a valence line over Face2AI's timeline samples with a zero line; nothing when < 2 points. */
-function Sparkline({ samples }) {
-  const points = sparklinePoints(samples)
+/** Plain SVG (no JSX): a valence line over Face2AI's timeline samples with a zero line; nothing without points. */
+function Sparkline({ points }) {
   if (!points) return null
   return jsxs('svg', {
     width: '100%',
@@ -181,7 +209,7 @@ function Chip() {
     className: `px-1.5 text-[0.6875rem] ${TONE_CLASS[tone]}`,
     onClick: () => {
       haptic('tap')
-      void refresh()
+      void refresh({ forceTimeline: true })
     },
     children: `${dot} 👤 ${text}`,
   })
@@ -195,7 +223,10 @@ function Pane() {
   const p = current.presence || {}
   const { text, tone } = labelFor(p)
   const rows = [...items].reverse().slice(0, 12)
-  const samples = (tl && Array.isArray(tl.samples) ? tl.samples : []).filter((s) => !p.identity_id || (s && s.identity_id === p.identity_id))
+  // One line = one person: with a known person only their samples, otherwise only the unattributed ones
+  // (UNKNOWN/NO_FACE/MULTIPLE_FACES) — never several people's valence drawn as one curve.
+  const samples = (tl && Array.isArray(tl.samples) ? tl.samples : []).filter((s) => s && (p.identity_id ? s.identity_id === p.identity_id : !s.identity_id))
+  const sparkPoints = sparklinePoints(samples)
   const moodRows = moodItems.filter((m) => m && m.to_mood).slice(-6).reverse()
   const actionRows = actionItems.slice(-5).reverse()
   return jsxs('div', {
@@ -221,8 +252,8 @@ function Pane() {
         title: HEDGE_TITLE,
         children: [
           jsx('div', { className: 'text-[0.6875rem] uppercase tracking-wider text-(--ui-text-tertiary)', children: 'Valenz · letzte 10 min' }),
-          sparklinePoints(samples)
-            ? jsx(Sparkline, { samples })
+          sparkPoints
+            ? jsx(Sparkline, { points: sparkPoints })
             : jsx('div', { className: 'text-[0.75rem] text-(--ui-text-tertiary)', children: 'Noch kein Verlauf.' }),
           jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: RESOLUTION_HINT }),
         ],
@@ -277,7 +308,7 @@ function Pane() {
       jsxs('div', {
         className: 'mt-auto flex gap-2',
         children: [
-          jsx('button', { type: 'button', className: 'rounded border px-2 py-1 text-[0.75rem]', onClick: () => void refresh(), children: 'Aktualisieren' }),
+          jsx('button', { type: 'button', className: 'rounded border px-2 py-1 text-[0.75rem]', onClick: () => void refresh({ forceTimeline: true }), children: 'Aktualisieren' }),
           jsx('button', { type: 'button', className: 'rounded border px-2 py-1 text-[0.75rem]', onClick: () => void pluginCtx?.os.openExternal('http://127.0.0.1:8765/'), children: 'Face2AI öffnen' }),
         ],
       }),
@@ -301,16 +332,26 @@ export default {
     ctx.register({
       id: 'refresh',
       area: PALETTE_AREA,
-      data: { id: 'face2ai.refresh', label: 'Face2AI: Präsenz aktualisieren', keywords: ['face2ai', 'presence'], run: () => void refresh() },
+      data: { id: 'face2ai.refresh', label: 'Face2AI: Präsenz aktualisieren', keywords: ['face2ai', 'presence'], run: () => void refresh({ forceTimeline: true }) },
     })
     void refresh()
     const timer = setInterval(() => void refresh(), POLL_MS)
     const stopSocket = ctx.socket('/events', onFrame)
-    // Disposer (used by hot reload when the host honours it): stop polling and the live socket.
+    // Disposer (hot reload, or the user disabling the plugin in Settings): stop polling and the live socket,
+    // and drop the expression history with it — re-enabling must not show the previous session's moods and
+    // actions (a live /presence answer carries none, so nothing would overwrite them).
     return () => {
       clearInterval(timer)
       stopSocket()
       pluginCtx = null
+      latest = IDLE_PRESENCE
+      history = []
+      moods = []
+      actions = []
+      timeline = EMPTY_TIMELINE
+      timelineAt = 0
+      timelineIdentity = null
+      publish()
     }
   },
 }

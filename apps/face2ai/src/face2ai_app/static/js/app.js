@@ -5,12 +5,12 @@ import * as api from './api.js';
 import { CameraController } from './camera.js';
 import { decryptText, installAtmosphere, installMagnets, installSpotlights } from './effects.js';
 import { subscribeEvents } from './events.js';
-import { axisPercent, describeAction, describeCameraError, describeEvent, describeExpression, formatAxis, offlineView, pushSample, shouldGreet, sparklinePoints, transitionKey } from './model.js';
+import { allowActionEntry, axisPercent, describeAction, describeCameraError, describeEvent, describeExpression, formatAxis, isFreshEntry, offlineView, pushSample, shouldGreet, sparklinePoints, transitionKey } from './model.js';
 
 const RECOGNIZE_INTERVAL_MS = 450;
 const RECOGNIZE_ERROR_BACKOFF_MS = 1500;
 const STATUS_INTERVAL_MS = 5000;
-const MAX_EVENTS = 8;          // mood + action entries arrive from the server stream too (actions can be frequent); no browser-side debounce beyond the server's
+const MAX_EVENTS = 8;          // mood + action entries arrive from the server stream too; nothing is re-derived here, but an action label is *displayed* at most every ACTION_LOG_MIN_MS so a talking face cannot flush the log
 const AFFECT_SAMPLES = 120;    // valence samples kept for the tile sparkline (~70 s at the ~1.7 fps loop), from this page's own frames only
 const EXPRESSION_LANG = 'en';  // wording table in model.js; the shell is English, so the tile says "looks …" (hedged, never a fact)
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -40,6 +40,7 @@ const state = {
   agentConnected: false, // a voice agent subscribes to /api/events; it then owns the spoken greeting
   expression: { available: false, reason: null, enabled: false }, // opt-in mood hints (Stage 1), mirrored from /api/status
   affect: [],            // valence samples from this page's own frames → tile sparkline (Stage 2); mood/action log entries come from the server stream
+  actionLogged: new Map(), // action label -> last time it was shown in the log (display rate limit, not a re-derivation)
   eventsWarned: false,   // "Live events unavailable" is logged once; EventSource keeps reconnecting on its own
 };
 
@@ -649,19 +650,26 @@ setInterval(refreshStatus, STATUS_INTERVAL_MS);
 // ("Ben looks happy.", "Ben: brief smile (0.9 s)") — a hint, never a fact, and nothing in the shell gates on it.
 subscribeEvents({
   onMood: (t) => {
-    if (!state.expression.enabled || !t?.to_mood) return; // to_mood null = the mood ended; nothing to say
-    const described = describeExpression({ dominant: t.to_mood, scores: {} }, EXPRESSION_LANG);
+    // A reconnect replays the server's buffer (Last-Event-ID): a minutes-old mood is history, not news,
+    // and must not be stamped with the current time.
+    if (!state.expression.enabled || !t?.to_mood || !isFreshEntry(t)) return; // to_mood null = the mood ended; nothing to say
+    const described = describeExpression({ dominant: t.to_mood }, EXPRESSION_LANG);
     if (described) addEvent('Mood', `${t.display_name || 'someone'} ${described.label}.`);
   },
   onAction: (a) => {
-    if (!state.expression.enabled) return;
+    if (!state.expression.enabled || !isFreshEntry(a)) return;
+    // Actions can complete every ~1.8 s per group and several groups run at once while someone talks:
+    // without this display limit a few seconds of conversation would evict every error/greeting entry.
+    if (!allowActionEntry(state.actionLogged, a.action, Date.now())) return;
     const described = describeAction(a, EXPRESSION_LANG);
     if (described) addEvent('Expression', `${a.display_name || 'someone'}: ${described.label}`);
   },
-  onError: () => {
+  onError: (info) => {
     // EventSource retries by itself; say so once instead of flooding the log on every attempt.
     if (state.eventsWarned) return;
     state.eventsWarned = true;
-    addEvent('Live events unavailable', 'Mood and expression entries pause until the stream reconnects.');
+    addEvent('Live events unavailable', info?.unsupported
+      ? 'This browser has no EventSource, so mood and expression entries stay off.'
+      : 'Mood and expression entries pause until the stream reconnects.');
   },
 });

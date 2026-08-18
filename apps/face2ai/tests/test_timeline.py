@@ -37,6 +37,10 @@ def test_moods_and_actions_are_kept_and_cleared():
         h.record_action(ActionEvent(at=T0 + timedelta(seconds=i), action="smile", onset_at=T0, apex_at=T0, offset_at=T0, peak=0.5, duration_ms=1, frames=1))
     snap = h.snapshot(now=T0 + timedelta(seconds=3))
     assert len(snap.moods) == 2 and len(snap.actions) == 2 and snap.moods[0].at == T0 + timedelta(seconds=1)
-    h.clear()
+    h.record_sample(sample(3, "a"))
+    # clear() reports what it dropped (2 moods + 2 actions + 1 sample), so the route can tell a real
+    # forget from a no-op and only announce the former to mirrors.
+    assert h.clear() == 5
     empty = h.snapshot()
     assert (empty.samples, empty.moods, empty.actions) == ([], [], [])
+    assert h.clear() == 0  # nothing left to forget

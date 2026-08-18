@@ -89,10 +89,12 @@ async def history() -> dict[str, Any]:
 @router.get("/timeline")
 async def timeline(seconds: int = Query(default=TIMELINE_DEFAULT_SECONDS), identity_id: str | None = Query(default=None, max_length=80)) -> dict[str, Any]:
     """Proxy of Face2AI's ``GET /api/expression/timeline`` — bounded, in memory on the Face2AI side, cleared on
-    presence reset/restart; hints, never facts. ``seconds`` is clamped to Face2AI's range instead of failing so the
-    pane always gets a well-formed answer; on any error the shape stays the same with empty lists."""
+    presence reset/restart; hints, never facts. An out-of-range ``seconds`` is clamped into Face2AI's range instead
+    of failing so the pane always gets a well-formed answer (a non-integer is still rejected by FastAPI with 422
+    before this runs); on any error the shape stays the same with empty lists."""
     seconds = max(TIMELINE_MIN_SECONDS, min(TIMELINE_MAX_SECONDS, int(seconds)))
     params: dict[str, Any] = {"seconds": seconds}
+    identity_id = (identity_id or "").strip()  # " " is not a person: Face2AI would filter everything away
     if identity_id:
         params["identity_id"] = identity_id
     try:

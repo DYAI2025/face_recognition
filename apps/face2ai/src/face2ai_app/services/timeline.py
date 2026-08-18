@@ -98,9 +98,15 @@ class AffectHistory:
                 actions=[a for a in self._actions if keep(a)],
             )
 
-    def clear(self) -> None:
-        """Forget everything (presence reset, restart) — the timeline never outlives the process."""
+    def clear(self) -> int:
+        """Forget everything (presence reset, restart) — the timeline never outlives the process.
+
+        Returns how many entries were dropped, so the caller can tell a real "forget" from a no-op
+        (mirrors on other machines only learn about a clear when there was something to clear).
+        """
         with self._lock:
+            dropped = len(self._samples) + len(self._moods) + len(self._actions)
             self._samples.clear()
             self._moods.clear()
             self._actions.clear()
+            return dropped

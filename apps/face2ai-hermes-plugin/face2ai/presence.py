@@ -10,6 +10,7 @@ micro-expression and never a fact either.
 from __future__ import annotations
 
 import json
+import math
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
@@ -42,7 +43,11 @@ MOOD_WORDS: dict[str, dict[str, Any]] = {
 
 
 def _number(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    """A wire number, or None — NaN/inf included: they would print as "(nan s)" in a user-visible phrase."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def mood_sentence(mood: str | None, valence: float | None, arousal: float | None, *, language: str = "de", subject: str | None = None) -> str:
@@ -51,9 +56,10 @@ def mood_sentence(mood: str | None, valence: float | None, arousal: float | None
     are hedged too (lower-cased) and never raise."""
     if not isinstance(mood, str) or not mood:
         return ""
-    words = MOOD_WORDS["de"] if language.lower().startswith("de") else MOOD_WORDS["en"]
+    words = MOOD_WORDS["de"] if str(language or "de").lower().startswith("de") else MOOD_WORDS["en"]
     label = words["labels"].get(mood, mood.lower())
-    numbers = [f"{words[key]} {round(value, 1) + 0.0:+.1f}" for key, value in (("valence", valence), ("arousal", arousal)) if value is not None]
+    # _number() again, not `is not None`: a NaN/inf axis would print as "Valenz +nan" in a user-visible sentence.
+    numbers = [f"{words[key]} {round(number, 1) + 0.0:+.1f}" for key, value in (("valence", valence), ("arousal", arousal)) if (number := _number(value)) is not None]
     detail = f" ({', '.join(numbers)})" if numbers else ""
     dash = "–" if words is MOOD_WORDS["de"] else "—"
     return f"{subject or words['generic_subject']} {words['prefix']}{label}{detail} {dash} {words['hedge']}."
@@ -87,16 +93,18 @@ def action_sentence(data: Any, *, language: str = "de") -> str:
     action = data.get("action")
     if not isinstance(action, str) or not action:
         return ""
-    words = ACTION_WORDS["de"] if language.lower().startswith("de") else ACTION_WORDS["en"]
+    words = ACTION_WORDS["de"] if str(language or "de").lower().startswith("de") else ACTION_WORDS["en"]
     label = words["labels"].get(action, action.lower().replace("_", " "))
     duration = _number(data.get("duration_ms"))
-    qualifier = ""
+    qualifier, detail = "", ""
     if duration is not None:
-        if duration <= ACTION_BRIEF_MS:
+        shown = f"{duration / 1000:.1f}"  # the number the reader sees …
+        shown_ms = float(shown) * 1000  # … and the qualifier follows it, so 4999 ms is not "Lächeln (5.0 s)"
+        if shown_ms <= ACTION_BRIEF_MS:
             qualifier = words["brief"]
-        elif duration >= ACTION_HELD_MS:
+        elif shown_ms >= ACTION_HELD_MS:
             qualifier = words["held"]
-    detail = f" ({duration / 1000:.1f} s)" if duration is not None else ""
+        detail = f" ({shown} s)"
     return f"{qualifier}{label}{detail}"
 
 
@@ -144,6 +152,16 @@ def _parse_time(value: Any) -> datetime | None:
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def clock(value: Any) -> str:
+    """An ISO wire timestamp as a local wall-clock "12:00:03" — "" when there is none.
+
+    Face2AI timestamps are UTC; ``describe()`` already prints local times, so every other user-visible
+    time has to agree with it instead of slicing the raw UTC string.
+    """
+    dt = _parse_time(value)
+    return dt.astimezone().strftime("%H:%M:%S") if dt else ""
 
 
 @dataclass
@@ -276,6 +294,13 @@ class PresenceStore:
             if frame.event == "action":  # completed facial action: history only — never touches presence, never a reaction
                 self.actions.append(dict(frame.data))
                 return None
+            if frame.event == "timeline_cleared":
+                # Face2AI forgot its affect history on an explicit `POST /api/presence/reset`. That is a
+                # privacy control, so the mirror forgets with it — a NO_SIGNAL transition alone would not
+                # do (an ordinary presence expiry publishes one and keeps the history on both sides).
+                self.moods.clear()
+                self.actions.clear()
+                return None
             return None
 
     def mark_lost(self, error: str) -> None:
@@ -295,8 +320,10 @@ class PresenceStore:
                 "last_error": self.last_error,
                 "presence": self.current.to_dict(),
                 "history": [t.to_dict() for t in list(self.history)[-10:]],
-                "moods": list(self.moods)[-20:],
-                "actions": list(self.actions)[-10:],
+                # dict(…) per entry, not just a new list: a caller that edits a snapshot entry in place
+                # (host-side redaction, normalisation) must not rewrite the store's ring buffer.
+                "moods": [dict(m) for m in list(self.moods)[-20:]],
+                "actions": [dict(a) for a in list(self.actions)[-10:]],
             }
 
     def age_seconds(self, now: datetime | None = None) -> float | None:

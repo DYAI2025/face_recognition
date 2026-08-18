@@ -208,19 +208,30 @@ def test_browser_takes_mood_and_action_entries_from_the_server_stream():
     assert "role=agent" not in events_text
     for kind in ("'mood'", "'action'"):
         assert f"addEventListener({kind}" in events_text, kind
-    assert re.search(r"return \(\) => source\.close\(\)", events_text), "subscribeEvents must hand back a close()"
+    # The client's behaviour (subscribed URL, parsing, close(), the unsupported-browser branch) is pinned
+    # against a fake EventSource in tests/js/events.test.mjs — not by a regex over its source here.
     app_js = (JS_DIR / "app.js").read_text(encoding="utf-8")
     assert re.search(r"import \{ subscribeEvents \} from '\./events\.js'", app_js)
     assert "subscribeEvents({" in app_js
     assert "onMood" in app_js and "onAction" in app_js and "onError" in app_js
     assert "describeAction(" in app_js and "pushSample(" in app_js and "sparklinePoints(" in app_js
     assert "Live events unavailable" in app_js
+    # Replay discipline + log discipline (both pinned behaviourally in tests/js/model.test.mjs): a reconnect
+    # replays the server buffer, and actions fire often enough to evict every other entry from the 8-slot log.
+    assert "isFreshEntry(" in app_js, "replayed mood/action frames must not be logged as if they just happened"
+    assert "allowActionEntry(" in app_js, "action entries need a display rate limit or they flush the event log"
     for path in _js_files():
         assert "trackMood" not in path.read_text(encoding="utf-8"), f"{path.name}: client-side mood debounce must be gone"
 
 
-def test_action_wording_is_hedged_and_never_a_certainty(client):
-    """Actions are described as movements with a duration ("brief smile (0.9 s)"), never as a state of the person."""
+def test_action_wording_tables_exist_and_the_source_has_no_certainty_vocabulary(client):
+    """A vocabulary tripwire over the shipped source text, not a proof of what the UI renders.
+
+    It catches the phrasings we know read as findings ("is smiling", "smile detected", "micro-expression")
+    anywhere in the static sources — comments included — and pins that both wording tables are there.
+    It does not and cannot prove that every rendered label is hedged: that guard is behavioural and lives
+    in tests/js/model.test.mjs ("describeAction never reads as a finding", 8 actions × 2 languages × 3 durations).
+    """
     model_js = client.get("/assets/js/model.js").text
     for word in ("'brief '", "'held '", "'kurzes '", "'anhaltendes '", "brow_raise", "lip_press"):
         assert word in model_js, word

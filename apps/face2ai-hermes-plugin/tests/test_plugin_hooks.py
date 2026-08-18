@@ -143,5 +143,19 @@ def test_action_frames_are_persisted_but_never_a_transition_or_announcement_or_c
     assert context.startswith("[face2ai] Ben steht vor der Kamera") and "Lächeln" not in context and "smile" not in context  # actions are not spoken into context
     text = ctx.commands["presence"]("")
     assert "Zuletzt gezeigt: kurzes Lächeln" in text  # but /presence lists them
+    local = datetime.fromisoformat(now).astimezone().strftime("%H:%M:%S")
+    assert f"kurzes Lächeln (0.9 s) ({local})" in text  # local wall time, like describe()'s "Zuletzt gesehen" — one clock per reply
     tool = json.loads(ctx.tools["presence_now"][1]({}))
     assert tool["actions"][-1]["duration_ms"] == 900 and "smile" not in tool["summary"]
+    # presence_now hands the model raw action dicts, so the system section has to hedge them too
+    assert "expression dynamics" in ctx.sections["face2ai"] and "never micro-expressions" in ctx.sections["face2ai"]
+    assert "never evidence of what" in ctx.sections["face2ai"]
+    # An action without a timestamp must not render an empty "()" …
+    plugin._handle_frame(SseFrame("action", {"sequence": 2, "action": "brow_raise", "duration_ms": 2300}))
+    assert "Brauen hoch (2.3 s)," in ctx.commands["presence"]("") or ctx.commands["presence"]("").endswith("Brauen hoch (2.3 s)")
+    # … and Face2AI's explicit forget empties the mirror, persisted for the dashboard process.
+    plugin._handle_frame(SseFrame("timeline_cleared", {"sequence": 3, "at": now}))
+    snap = ctx.state.get("snapshot")
+    assert (snap["moods"], snap["actions"]) == ([], [])
+    assert "Zuletzt gezeigt" not in ctx.commands["presence"]("")
+    assert snap["presence"]["display_name"] == "Ben"  # forgetting the history is not a presence change

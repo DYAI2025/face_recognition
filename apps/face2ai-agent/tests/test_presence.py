@@ -183,9 +183,10 @@ def test_mood_word_tables_cover_exactly_the_eight_wire_labels():
 
 
 async def test_presence_loop_ignores_action_frames_by_design():
-    """Stage 2 SSE ``action`` (a completed facial action: onset/apex/offset) is for panes and history only.
-    The voice loop must stay inert: no dispatch, no exception, memory untouched — live and replayed alike —
-    and the frames after it are still handled."""
+    """Stage 2 SSE ``action`` (a completed facial action: onset/apex/offset) and ``timeline_cleared``
+    (the user's explicit forget, for mirrors that keep expression history — the agent keeps none) are for
+    panes and history only. The voice loop must stay inert: no dispatch, no exception, memory untouched —
+    live and replayed alike — and the frames after them are still handled."""
     from face2ai_agent import presence as mod
 
     action = {"identity_id": "a", "display_name": "Ada", "action": "smile", "onset_at": T0.isoformat(),
@@ -195,7 +196,8 @@ async def test_presence_loop_ignores_action_frames_by_design():
         mod.SseFrame("hello", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}, "last_sequence": 1}),
         mod.SseFrame("action", {"sequence": 1, "at": T0.isoformat(), **action}, "1"),  # replayed (sequence <= hello.last_sequence)
         mod.SseFrame("action", {"sequence": 2, "at": T0.isoformat(), **action}, "2"),  # live
-        mod.SseFrame("heartbeat", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}}),
+        mod.SseFrame("timeline_cleared", {"sequence": 3, "at": T0.isoformat()}, "3"),  # the forget signal: nothing to forget here
+        mod.SseFrame("heartbeat",{"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}}),
     ]
 
     class FakeClient:
@@ -210,7 +212,7 @@ async def test_presence_loop_ignores_action_frames_by_design():
 
     memory = mod.PresenceMemory()
     await mod.run_presence_loop(FakeClient(), memory, on_event)
-    assert seen == [("hello", False), ("heartbeat", False)]  # neither action frame is dispatched
+    assert seen == [("hello", False), ("heartbeat", False)]  # neither action frame nor the clear is dispatched
     assert memory.current == mod.Presence.from_payload(frames[0].data["presence"])  # memory unchanged by actions
     assert memory.current.mood == "Happiness" and memory.current.state == "KNOWN"
     assert len(memory.history) == 0 and len(memory.store_changes) == 0 and memory.identity_count is None

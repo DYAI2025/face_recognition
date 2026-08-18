@@ -79,3 +79,30 @@ def test_timeline_error_keeps_the_shape(monkeypatch):
     client = TestClient(_app())
     body = client.get("/timeline", params={"seconds": 120}).json()
     assert body == {"error": "refused", "seconds": 120, "samples": [], "moods": [], "actions": []}
+
+
+def test_whitespace_identity_is_not_a_filter(monkeypatch):
+    """`?identity_id=%20` is nobody: forwarding " " makes Face2AI (`identity_id or None`) filter everything away."""
+    calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_client(calls, {"seconds": 600, "samples": [], "moods": [], "actions": []}))
+    monkeypatch.setattr(plugin_api, "_events_url", lambda: "http://face2ai.test:8765")
+    client = TestClient(_app())
+    client.get("/timeline", params={"identity_id": "   "})
+    assert calls[-1][2] == {"seconds": 600}
+    client.get("/timeline", params={"identity_id": " a "})
+    assert calls[-1][2] == {"seconds": 600, "identity_id": "a"}
+
+
+def test_timeline_non_2xx_and_unexpected_payload_keep_the_shape(monkeypatch):
+    """Both failure branches the pane must survive: an HTTP error status and a body that is not a dict."""
+    calls = []
+    monkeypatch.setattr(plugin_api, "_events_url", lambda: "http://face2ai.test:8765")
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_client(calls, {"detail": "nope"}, status=503))
+    client = TestClient(_app())
+    body = client.get("/timeline", params={"seconds": 60}).json()
+    assert (body["seconds"], body["samples"], body["moods"], body["actions"]) == (60, [], [], [])
+    assert body["error"], "the pane is told why it has no data"
+
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_client(calls, ["not", "a", "dict"]))
+    body = client.get("/timeline", params={"seconds": 60}).json()
+    assert body == {"error": "unexpected timeline payload", "seconds": 60, "samples": [], "moods": [], "actions": []}

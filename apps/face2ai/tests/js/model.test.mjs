@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  ACTION_LOG_MIN_MS,
+  allowActionEntry,
   axisPercent,
   describeAction,
   describeCameraError,
@@ -9,6 +11,7 @@ import {
   describeExpression,
   formatAxis,
   formatDuration,
+  isFreshEntry,
   offlineView,
   projectBox,
   pushSample,
@@ -260,4 +263,62 @@ test('sparkline maps -1..1 samples into the box, newest right', () => {
   const bounded = pushSample(Array.from({ length: 3 }, (_, i) => ({ v: 0, at: i })), 0.5, 99, 3);
   assert.deepEqual(bounded, [{ v: 0, at: 1 }, { v: 0, at: 2 }, { v: 0.5, at: 99 }]); // drops the oldest, keeps the newest
   assert.equal(pushSample([], NaN, 1).length, 0); // a non-number is not a sample
+});
+
+test('describeAction and describeExpression survive a hostile language key', () => {
+  // `ACTION_WORDS['__proto__']` is Object.prototype: truthy, but without `labels` — `[lang] ||` threw here.
+  assert.equal(describeAction({ action: 'smile', duration_ms: 900 }, '__proto__').label, 'kurzes Lächeln (0.9 s)');
+  assert.equal(describeExpression({ dominant: 'Happiness' }, '__proto__').label, 'wirkt fröhlich');
+  assert.equal(describeAction({ action: 'smile', duration_ms: 900 }, 'constructor').label, 'kurzes Lächeln (0.9 s)');
+});
+
+test('the brief/held qualifier follows the printed duration, so text and number never disagree', () => {
+  // 4999 ms prints "5.0 s": calling that a bare "smile (5.0 s)" while 5000 ms reads "held smile (5.0 s)"
+  // would put two different phrasings on the same visible number.
+  assert.equal(describeAction({ action: 'smile', duration_ms: 4999 }, 'en').label, 'held smile (5.0 s)');
+  assert.equal(describeAction({ action: 'smile', duration_ms: 4949 }, 'en').label, 'smile (4.9 s)');
+  assert.equal(describeAction({ action: 'smile', duration_ms: 1049 }, 'en').label, 'brief smile (1.0 s)');
+  assert.equal(describeAction({ action: 'smile', duration_ms: 1051 }, 'en').label, 'smile (1.1 s)');
+});
+
+test('pushSample stays bounded for every max, including 0 and negatives', () => {
+  // A `while (length > max) shift()` loop never terminates for a negative max — a regression here
+  // hangs this test instead of failing it.
+  assert.deepEqual(pushSample([{ v: 0, at: 1 }], 0.5, 2, -1), []);
+  assert.deepEqual(pushSample([{ v: 0, at: 1 }], 0.5, 2, 0), []);
+  assert.deepEqual(pushSample([{ v: 0, at: 1 }], 0.5, 2, 1), [{ v: 0.5, at: 2 }]);
+});
+
+test('sparklinePoints never emits NaN coordinates or throws on junk', () => {
+  // setAttribute('points', …) swallows "0,NaN" silently and draws nothing.
+  assert.equal(sparklinePoints([{ v: 'x' }, { v: 0 }], 120, 24), '0,12 120,12');
+  assert.equal(sparklinePoints([null, { v: 1 }], 120, 24), '0,12 120,0');
+  assert.equal(sparklinePoints(null, 120, 24), '');
+  assert.equal(sparklinePoints(undefined, 120, 24), '');
+  assert.doesNotMatch(sparklinePoints([{ v: NaN }, { v: 0.5 }], 120, 24), /NaN/);
+});
+
+test('isFreshEntry keeps replayed history out of the live event log', () => {
+  const now = Date.parse('2026-08-18T12:00:00Z');
+  assert.equal(isFreshEntry({ at: '2026-08-18T12:00:00Z' }, now), true);
+  assert.equal(isFreshEntry({ at: '2026-08-18T11:59:51Z' }, now), true);   // 9 s old: still news
+  assert.equal(isFreshEntry({ at: '2026-08-18T11:59:50Z' }, now), false);  // 10 s: the replay boundary
+  assert.equal(isFreshEntry({ at: '2026-08-18T11:45:00Z' }, now), false);  // a reconnect replays minutes-old frames
+  assert.equal(isFreshEntry({ at: '2026-08-18T12:00:01Z' }, now), true);   // server marginally ahead
+  assert.equal(isFreshEntry({}, now), false);                              // no timestamp: never treated as news
+  assert.equal(isFreshEntry({ at: 'not a date' }, now), false);
+  assert.equal(isFreshEntry({ at: 12345 }, now), false); // Date.parse would read a number as a year 12345 → "fresh"
+  assert.equal(isFreshEntry(null, now), false);
+});
+
+test('allowActionEntry rate-limits one action label without touching the others', () => {
+  const seen = new Map();
+  assert.equal(allowActionEntry(seen, 'smile', 1000), true);
+  assert.equal(allowActionEntry(seen, 'smile', 1000 + ACTION_LOG_MIN_MS - 1), false); // a talking face would flush the log
+  assert.equal(allowActionEntry(seen, 'brow_raise', 1000), true);                     // a different action is not blocked
+  assert.equal(allowActionEntry(seen, 'smile', 1000 + ACTION_LOG_MIN_MS), true);
+  assert.equal(allowActionEntry(seen, '', 9999), false);
+  assert.equal(allowActionEntry(seen, undefined, 9999), false);
+  assert.equal(allowActionEntry(seen, '__proto__', 1000), true);                      // a Map: no prototype to reach
+  assert.equal(allowActionEntry(seen, '__proto__', 1001), false);
 });

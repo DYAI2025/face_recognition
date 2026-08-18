@@ -113,7 +113,10 @@ curl -s -N 'http://127.0.0.1:8765/api/events?role=probe'      # leave running in
    curl -s 'http://127.0.0.1:8765/api/expression/timeline?seconds=600'
    # {"seconds":600,"samples":[],"moods":[],"actions":[]}
    ```
-   Nothing was persisted: a restart of the app must show the same empty snapshot.
+   Nothing was persisted: a restart of the app must show the same empty snapshot. The reset also
+   publishes one `timeline_cleared` frame (`{at}` only) — watch it with
+   `curl -sN 'http://127.0.0.1:8765/api/events?role=browser'` in a second terminal — and the Hermes
+   pane's "Stimmung zuletzt"/"Ausdruck zuletzt" must be empty afterwards without a reload.
 6. **Hermes pane** (after `apps/face2ai-hermes-plugin/deploy.sh` and ⌘K → Reload desktop plugins):
    the Face2AI pane shows "Valenz · letzte 10 min" as a sparkline (with the "~0,6 s" resolution
    note), "Stimmung zuletzt" and "Ausdruck zuletzt" with hedged German entries ("kurzes Lächeln

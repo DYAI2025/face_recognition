@@ -315,29 +315,29 @@ def test_presence_reset_clears_mood_and_forgets_the_smoothing(live, fake_engine,
     _enable_expression(live, fake_expression, [HAPPY])
     _recognize(live, times=2)  # seq 1 presence NO_SIGNAL->UNKNOWN, seq 2 mood ->Happiness
     assert live.client.get("/api/presence").json()["mood"] == "Happiness"
-    reset = live.client.post("/api/presence/reset").json()  # seq 3 presence UNKNOWN->NO_SIGNAL, seq 4 mood ->None
+    reset = live.client.post("/api/presence/reset").json()  # seq 3 presence UNKNOWN->NO_SIGNAL, seq 4 mood ->None, seq 5 timeline_cleared
     assert (reset["state"], reset["mood"], reset["valence"], reset["arousal"]) == ("NO_SIGNAL", None, None, None)
     # The mood tracker was reset too: one frame after the reset cannot re-commit (EMA restarts at 0) ...
-    _recognize(live)  # seq 5 presence NO_SIGNAL->UNKNOWN
+    _recognize(live)  # seq 6 presence NO_SIGNAL->UNKNOWN
     presence = live.client.get("/api/presence").json()
     assert (presence["state"], presence["mood"]) == ("UNKNOWN", None)
     # ... the second one can.
-    _recognize(live)  # seq 6 mood ->Happiness
+    _recognize(live)  # seq 7 mood ->Happiness
     assert live.client.get("/api/presence").json()["mood"] == "Happiness"
-    # A reset with no mood set publishes the presence transition only.
-    live.client.post("/api/presence/reset")  # seq 7 presence UNKNOWN->NO_SIGNAL, seq 8 mood ->None
-    _recognize(live)  # seq 9 presence NO_SIGNAL->UNKNOWN (no mood yet)
-    live.client.post("/api/presence/reset")  # seq 10 presence UNKNOWN->NO_SIGNAL, no mood event
-    live.client.post("/api/presence/reset")  # already NO_SIGNAL: nothing published
-    frames = live.sse("/api/events?after=0", wanted=11)  # heartbeats included: proves nothing else was buffered
+    # A reset with no mood set publishes the presence transition (plus the clear) only.
+    live.client.post("/api/presence/reset")  # seq 8 presence UNKNOWN->NO_SIGNAL, seq 9 mood ->None, seq 10 timeline_cleared
+    _recognize(live)  # seq 11 presence NO_SIGNAL->UNKNOWN (no mood yet, but one affect sample)
+    live.client.post("/api/presence/reset")  # seq 12 presence UNKNOWN->NO_SIGNAL, no mood event, seq 13 timeline_cleared
+    live.client.post("/api/presence/reset")  # already NO_SIGNAL and nothing left to forget: nothing published
+    frames = live.sse("/api/events?after=0", wanted=14)  # heartbeats included: proves nothing else was buffered
     kinds = [(f["event"], f["data"].get("to_state", f["data"].get("to_mood"))) for f in frames[1:]]
     assert kinds == [
         ("presence", "UNKNOWN"), ("mood", "Happiness"),
-        ("presence", "NO_SIGNAL"), ("mood", None),  # exactly one mood end per reset, right after the presence
+        ("presence", "NO_SIGNAL"), ("mood", None), ("timeline_cleared", None),  # exactly one mood end per reset, right after the presence
         ("presence", "UNKNOWN"), ("mood", "Happiness"),
-        ("presence", "NO_SIGNAL"), ("mood", None),
+        ("presence", "NO_SIGNAL"), ("mood", None), ("timeline_cleared", None),
         ("presence", "UNKNOWN"),
-        ("presence", "NO_SIGNAL"),  # no mood was set: no mood event
+        ("presence", "NO_SIGNAL"), ("timeline_cleared", None),  # no mood was set: no mood event
     ]
     ended = frames[4]["data"]
     assert (ended["from_mood"], ended["to_mood"], ended["valence"], ended["arousal"]) == ("Happiness", None, None, None)
@@ -442,6 +442,22 @@ def test_presence_reset_clears_the_timeline_and_active_actions(live, fake_engine
     fake_expression.expressions = [smiling(0.0)]
     _recognize(live)
     assert live.client.get("/api/expression/timeline").json()["actions"] == []  # the smile's offset is unknown -> no event
+
+
+def test_reset_announces_the_forget_on_the_wire_only_when_something_was_forgotten(live, fake_engine, fake_expression, face):
+    """A mirror (Hermes plugin, pane) keeps its own copy of the mood/action history, so the user's explicit
+    "forget" has to be visible on the wire. A NO_SIGNAL transition is not that signal: an ordinary presence
+    expiry publishes one too and deliberately keeps the timeline."""
+    fake_engine.faces = [face]
+    _enable_expression(live, fake_expression, [smiling(0.9)])
+    _recognize(live)  # seq 1 presence; one affect sample recorded
+    live.client.post("/api/presence/reset")  # seq 2 presence NO_SIGNAL, seq 3 timeline_cleared
+    live.client.post("/api/presence/reset")  # nothing left: no transition, no clear announcement
+    frames = live.sse("/api/events?after=0", wanted=4, skip_heartbeats=True)
+    assert [f["event"] for f in frames] == ["hello", "presence", "presence", "timeline_cleared"]
+    cleared = frames[3]
+    assert set(cleared["data"]) == {"sequence", "at"}  # a timestamp and nothing else: no names, no labels
+    assert cleared["data"]["at"].endswith("+00:00") and cleared["id"] == "3"
 
 
 def test_toggle_off_drops_active_actions(live, fake_engine, fake_expression, face):

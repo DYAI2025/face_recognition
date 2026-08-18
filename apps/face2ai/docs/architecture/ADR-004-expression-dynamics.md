@@ -82,7 +82,7 @@ decision, not an appendix.
    flicker (the point ADR-003 deferred), but a pane can draw a line. Toggling expression off clears
    the presence mood *and* affect unconditionally: a valence can be live without a committed mood.
 
-4. **One new SSE event and one new endpoint.**
+4. **Two new SSE events and one new endpoint.**
    `GET /api/events` gains `action` next to `hello` / `presence` / `mood` / `store` / `heartbeat`;
    the payload is the `ActionEvent` (`at` == `offset_at`, `identity_id`, `display_name`, `action`,
    `onset_at`, `apex_at`, `offset_at`, `peak`, `duration_ms`, `frames`) plus the broker's
@@ -92,6 +92,11 @@ decision, not an appendix.
    "nobody". Both are hints: nothing in the app reads them back, and a failure inside the dynamics
    block is caught in `routes._observe_expression` — logged once at WARNING with a traceback, then
    at DEBUG — so `/api/recognize` never fails because a hint failed.
+   The second event is `timeline_cleared` (`{at}` and nothing else): `POST /api/presence/reset`
+   publishes it when the clear actually dropped something. Forgetting is a privacy control, and
+   consumers keep their own mirrors of the mood/action stream, so it has to be *visible* — a
+   NO_SIGNAL transition is not that signal, because an ordinary presence expiry publishes one too
+   and deliberately keeps the history. Consumers that hold no expression history ignore it.
 
 5. **The browser takes mood and action entries from the server and draws its own sparkline.**
    `static/js/events.js` is a 24-line same-origin `EventSource` client on
@@ -99,7 +104,11 @@ decision, not an appendix.
    voice agent); it listens to `mood` and `action` only and drops malformed payloads instead of
    throwing. The server's `MoodTracker`/`ActionTracker` are the single source of truth, so nothing
    is re-derived or debounced client-side — the Stage 1 `trackMood` helper is deleted and
-   `tests/test_static.py` asserts it stays deleted. Entries are hedged and capped at 8 in the
+   `tests/test_static.py` asserts it stays deleted. Two *display* rules stay in the page, because
+   the eight-slot log is shared with errors, greetings and enrollments: a replayed entry (the server
+   buffers 200 events and `EventSource` resumes with `Last-Event-ID`) is dropped by `isFreshEntry`
+   instead of being logged with the current clock, and the same action label is shown at most every
+   5 s (`allowActionEntry`) — neither re-derives anything. Entries are hedged and capped at 8 in the
    stream: "Ben looks happy.", "Ben: brief smile (0.9 s)". The tile's valence sparkline is
    *separate*: it is built from this page's own frames (`pushSample`, last 120 readings ≈ 70 s),
    not from the server history — the page draws what it saw, and the timeline endpoint stays the
@@ -109,16 +118,21 @@ decision, not an appendix.
    the last 50 `mood` and 30 `action` frames as they came off the wire; its snapshot carries the
    last 20 moods / 10 actions for the dashboard process. `GET /api/plugins/face2ai/timeline`
    proxies Face2AI's endpoint (seconds clamped into 10..3600 instead of failing; on any error the
-   same shape with empty lists). The desktop pane draws "Valenz · letzte 10 min" as an SVG
-   sparkline over the timeline samples filtered to the person currently in front of the camera,
+   same shape with empty lists). A `timeline_cleared` frame empties that mirror, and so does the
+   pane's disposer, so disabling and re-enabling the plugin never shows the previous session.
+   The desktop pane draws "Valenz · letzte 10 min" as an SVG sparkline over the timeline samples —
+   fetched on its own ≥ 20 s cadence rather than on the 4 s presence poll (a 10 min window is up to
+   2000 samples over the tunnel) and narrowed server-side to the person currently in front of the
+   camera (without one, only the unattributed samples: one line is always one person) —
    plus "Stimmung zuletzt" (last 6 mood changes) and "Ausdruck zuletzt" (last 5 actions), each with
    the hedge in the tooltip and a "~0,6 s" resolution note. The **LLM context stays mood-only**:
    `describe()` and the `[face2ai]` line never mention actions — a language model narrating every
    brow raise is exactly the over-reading this ADR is trying to avoid.
 
-7. **The voice agent ignores `action` by design.** `run_presence_loop` dispatches
-   `hello/presence/store/heartbeat/mood/lost`; an `action` frame matches no branch and is dropped
-   without touching memory or the greeting path. This is a decision, not an omission, and
+7. **The voice agent ignores `action` and `timeline_cleared` by design.** `run_presence_loop`
+   dispatches `hello/presence/store/heartbeat/mood/lost`; neither frame matches a branch and both
+   are dropped without touching memory or the greeting path — the agent keeps no expression history,
+   so it has nothing to forget. This is a decision, not an omission, and
    `tests/test_presence.py::test_presence_loop_ignores_action_frames_by_design` pins it.
 
 8. **Settings** (all validated in `Settings.__post_init__`, all optional):
@@ -176,8 +190,13 @@ posture, not legal advice; a deployment beyond one person's own machine needs it
   whole surface degrades to "no `action` events, empty timeline", exactly as before.
 - (−) **The browser now holds an open SSE connection** for as long as the page is open (previously
   it only polled). `EventSource` reconnects by itself with `Last-Event-ID`; a failed attempt logs
-  "Live events unavailable" once instead of per retry. It is one more long-lived connection to the
+  "Live events unavailable" once instead of per retry, and the replayed buffer that arrives with the
+  reconnect is filtered by age before anything is logged. It is one more long-lived connection to the
   local process and one more thing that can be stale after a redeploy.
+- (−) **Forgetting is now a wire message.** A consumer that mirrors the mood/action stream can only
+  honour `POST /api/presence/reset` if it hears about it, so `timeline_cleared` exists. It is one
+  more event kind to keep in sync across four consumers (browser, plugin gateway half, desktop pane,
+  agent), and a consumer that ignores it keeps showing history the user asked to forget.
 - (−) More events on the wire. They are bounded by construction — hysteresis (0.35 on / 0.2 off)
   plus `min_frames` = 2 mean an action must be visible in at least two consecutive frames and only completes on the first frame below the off threshold, so about 1.2 s pass between onset and the reported offset at the browser's rate —
   but a talkative, expressive person will produce noticeably more `action` frames than `mood`
@@ -189,9 +208,9 @@ posture, not legal advice; a deployment beyond one person's own machine needs it
   mood worsening). Mitigated by hedged wording, the resolution note in both panes, tested
   vocabulary and opt-in — not eliminated.
 - New surface: `services/actions.py`, `services/timeline.py`, `domain.ACTIONS/ActionEvent/
-  AffectSample/TimelineSnapshot`, SSE `action`, `GET /api/expression/timeline`, four settings,
-  `static/js/events.js` + `describeAction/formatDuration/pushSample/sparklinePoints` in `model.js`,
-  the plugin's `/timeline` proxy and pane sparkline.
+  AffectSample/TimelineSnapshot`, SSE `action` and `timeline_cleared`, `GET /api/expression/timeline`,
+  four settings, `static/js/events.js` + `describeAction/formatDuration/pushSample/sparklinePoints/
+  isFreshEntry/allowActionEntry` in `model.js`, the plugin's `/timeline` proxy and pane sparkline.
 
 ## Review triggers
 

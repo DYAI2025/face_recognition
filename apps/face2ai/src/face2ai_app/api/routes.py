@@ -310,10 +310,14 @@ async def reset_presence(request: Request) -> Presence:
     in-memory affect history (``/api/expression/timeline`` is empty afterwards). Publishes the
     presence transition and, if a mood was set, its end; when presence already was NO_SIGNAL the
     presence and mood are unchanged and nothing is published (crossing NO_SIGNAL already reset the
-    mood tracker), but the history is still cleared."""
+    mood tracker), but the history is still cleared — and a non-empty clear is announced as
+    ``timeline_cleared`` so mirrors (Hermes plugin, panes) forget with us."""
     _publish_presence_transition(request, _presence(request).reset())
     _actions(request).reset()
-    _history(request).clear()
+    if _history(request).clear():
+        # The forget is a privacy control, so it has to be visible on the wire: a NO_SIGNAL transition
+        # alone is not the signal — an ordinary presence expiry publishes one too and keeps the history.
+        _events(request).publish("timeline_cleared", {"at": datetime.now(timezone.utc).isoformat()})
     return _presence(request).snapshot()
 
 

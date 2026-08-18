@@ -123,7 +123,8 @@ const EXPRESSION_TONES = Object.freeze({ Happiness: 'ok', Neutral: 'muted', Surp
 export function describeExpression(expr, lang = 'de') {
   const dominant = typeof expr?.dominant === 'string' ? expr.dominant : '';
   if (!dominant) return null;
-  const words = EXPRESSION_WORDS[lang] || EXPRESSION_WORDS.de;
+  // hasOwn, not `[lang] ||`: a lang of "__proto__" would otherwise resolve to Object.prototype and throw below.
+  const words = Object.hasOwn(EXPRESSION_WORDS, lang) ? EXPRESSION_WORDS[lang] : EXPRESSION_WORDS.de;
   const word = Object.hasOwn(words.labels, dominant) ? words.labels[dominant] : dominant.toLowerCase();
   return {
     label: `${words.prefix}${word}`,
@@ -183,11 +184,14 @@ export function formatDuration(ms) {
 export function describeAction(action, lang = 'de') {
   const name = typeof action?.action === 'string' ? action.action : '';
   if (!name) return null;
-  const words = ACTION_WORDS[lang] || ACTION_WORDS.de;
+  // hasOwn, not `[lang] ||`: a lang of "__proto__" would otherwise resolve to Object.prototype and throw below.
+  const words = Object.hasOwn(ACTION_WORDS, lang) ? ACTION_WORDS[lang] : ACTION_WORDS.de;
   const word = Object.hasOwn(words.labels, name) ? words.labels[name] : name.toLowerCase().replace(/_/g, ' ');
-  const ms = Number.isFinite(action.duration_ms) ? action.duration_ms : 0;
-  const qualifier = ms <= ACTION_BRIEF_MS ? words.brief : ms >= ACTION_HELD_MS ? words.held : '';
-  const duration = formatDuration(ms);
+  const duration = formatDuration(action?.duration_ms);
+  // The qualifier follows the *printed* value, so the text and the number never disagree:
+  // 4999 ms prints "5.0 s" and therefore reads "held", not a bare "smile (5.0 s)".
+  const shownMs = parseFloat(duration) * 1000;
+  const qualifier = shownMs <= ACTION_BRIEF_MS ? words.brief : shownMs >= ACTION_HELD_MS ? words.held : '';
   return { label: `${qualifier}${word} (${duration})`, tone: 'muted', duration };
 }
 
@@ -199,18 +203,51 @@ export function describeAction(action, lang = 'de') {
 export function pushSample(samples, value, at, max = 120) {
   if (!Number.isFinite(value)) return samples;
   samples.push({ v: value, at });
-  while (samples.length > max) samples.shift();
+  // splice, not a shift loop: `while (length > max)` never terminates for a negative max.
+  const keep = Number.isFinite(max) ? Math.max(0, Math.trunc(max)) : samples.length;
+  if (samples.length > keep) samples.splice(0, samples.length - keep);
   return samples;
 }
 
 /** SVG polyline `points` for samples in a `w`×`h` box: -1..1 clamped, +1 at the top, newest at the right; '' when empty. */
 export function sparklinePoints(samples, w, h) {
+  if (!Array.isArray(samples) || !samples.length) return '';
   const n = samples.length;
-  if (!n) return '';
   const round = (x) => String(Math.round(x * 10) / 10);
   return samples.map((s, i) => {
     const x = n === 1 ? 0 : (i / (n - 1)) * w;
-    const y = ((1 - Math.min(1, Math.max(-1, s.v))) / 2) * h;
+    const v = Number.isFinite(s?.v) ? s.v : 0; // a junk sample sits on the zero line; `points` must never carry NaN
+    const y = ((1 - Math.min(1, Math.max(-1, v))) / 2) * h;
     return `${round(x)},${round(y)}`;
   }).join(' ');
+}
+
+const ENTRY_MAX_AGE_MS = 10000;   // an SSE reconnect replays up to 200 buffered events (Last-Event-ID)
+export const ACTION_LOG_MIN_MS = 5000;  // per-action display rate limit for the 8-slot event log
+
+/**
+ * Is this server entry news rather than replayed history? `EventSource` resumes with `Last-Event-ID`
+ * after every drop (sleep, reload, Wi-Fi blip) and the server replays its buffer, so minutes-old
+ * moods/actions would otherwise be logged with the current clock. Server and page run on the same
+ * machine, so their wall clocks agree; an absent or unparsable `at` is never fresh, and an `at`
+ * slightly in the future still is.
+ */
+export function isFreshEntry(entry, now = Date.now(), maxAgeMs = ENTRY_MAX_AGE_MS) {
+  const at = typeof entry?.at === 'string' ? Date.parse(entry.at) : NaN; // a number would parse as a year
+  return Number.isFinite(at) && now - at < maxAgeMs;
+}
+
+/**
+ * Display rate limit for action entries: the same action label is logged again only after `minMs`.
+ * `seen` is a `Map` (an action label can never reach `Object.prototype`) and is mutated. This does not
+ * re-derive anything — the server stays the source of truth; it only keeps a talking face's brow and
+ * lip actions from evicting the eight slots that hold errors, greetings and enrollments.
+ */
+export function allowActionEntry(seen, action, now, minMs = ACTION_LOG_MIN_MS) {
+  const name = typeof action === 'string' && action ? action : '';
+  if (!name) return false;
+  const last = seen.get(name);
+  if (Number.isFinite(last) && now - last < minMs) return false;
+  seen.set(name, now);
+  return true;
 }

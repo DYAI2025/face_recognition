@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from .presence import PresenceStore, SseFrame, action_sentence, context_line, describe, parse_sse
+from .presence import PresenceStore, SseFrame, action_sentence, clock, context_line, describe, parse_sse
 
 logger = logging.getLogger("hermes.plugins.face2ai")
 
@@ -113,7 +113,7 @@ async def _consume_events() -> None:
 
 def _handle_frame(frame: SseFrame) -> None:
     transition = _store.apply(frame)
-    if frame.event in ("hello", "presence", "store", "heartbeat", "mood", "action"):
+    if frame.event in ("hello", "presence", "store", "heartbeat", "mood", "action", "timeline_cleared"):
         _persist()
     if transition is not None:
         _emit_change(transition)
@@ -222,9 +222,10 @@ def _cmd_presence(raw_args: str = "") -> str:
     text = describe(_store, language=lang)
     snap = _store.snapshot()
     if snap["history"]:
-        lines = [f"- {t['at'][11:19]}  {t['from_state']} → {t['to_state']}" + (f" ({t['display_name']})" if t.get("display_name") else "") for t in snap["history"][-6:]]
+        # clock(): local wall time, like describe()'s "Zuletzt gesehen" — one reply must not mix two clocks.
+        lines = [f"- {clock(t['at'])}  {t['from_state']} → {t['to_state']}" + (f" ({t['display_name']})" if t.get("display_name") else "") for t in snap["history"][-6:]]
         text += "\n" + ("Letzte Übergänge:" if lang.startswith("de") else "Recent transitions:") + "\n" + "\n".join(lines)
-    shown = [f"{action_sentence(a, language=lang)} ({str(a.get('at') or '')[11:19]})" for a in snap["actions"][-3:] if action_sentence(a, language=lang)]
+    shown = [sentence + (f" ({clock(a.get('at'))})" if clock(a.get("at")) else "") for a, sentence in ((a, action_sentence(a, language=lang)) for a in snap["actions"][-3:]) if sentence]
     if shown:  # facial actions: history for the human asking, deliberately not part of the injected context
         text += "\n" + ("Zuletzt gezeigt: " if lang.startswith("de") else "Recently shown: ") + ", ".join(shown)
     return text
@@ -249,7 +250,10 @@ SYSTEM_SECTION = (
     "not as identity verification; do not read the line back verbatim; use the tool presence_now or /presence "
     "when asked explicitly. The line may add a mood hint ('wirkt fröhlich' / 'looks happy' …): that is a best-effort "
     "guess from facial expression, never a fact — never state them as facts, do not psychoanalyse, mention them at "
-    "most in passing and with reservation, never probe because of them, and never let them change how you treat someone."
+    "most in passing and with reservation, never probe because of them, and never let them change how you treat someone. "
+    "The tool presence_now may also list completed facial actions (a brief smile, raised brows …): those are movements "
+    "of a face measured at ~0.6 s resolution — expression dynamics, never micro-expressions, never evidence of what "
+    "someone feels, means or hides. The same reservation applies, and they are never a reason to interpret anyone."
 )
 
 

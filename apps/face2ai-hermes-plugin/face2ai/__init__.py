@@ -163,10 +163,12 @@ def _maybe_announce(transition: Any) -> None:
 
 
 def _start_consumer(ctx: Any) -> None:
+    coro = _consume_events()
     try:
-        ctx.spawn_task(_consume_events(), name="face2ai-presence")
+        ctx.spawn_task(coro, name="face2ai-presence")
         logger.info("face2ai: presence consumer started (event loop)")
     except RuntimeError:
+        coro.close()  # never awaited on this path; close it so Python does not warn at gateway start
         # No running loop (CLI mode): run the consumer on a private loop in a daemon thread.
         def _runner() -> None:
             asyncio.run(_consume_events())

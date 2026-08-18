@@ -194,9 +194,13 @@ def test_events_stream_carries_only_the_documented_keys(live, fake_engine, face)
     live.client.post("/api/enroll?display_name=Ada&consent=true", content=b"frame", headers=HEADERS)
     frames = live.sse("/api/events?after=0", wanted=3)
     hello, presence, store = frames
-    presence_keys = {"state", "identity_id", "display_name", "faces", "since", "observed_at", "stale"}
+    presence_keys = {
+        "state", "identity_id", "display_name", "faces", "since", "observed_at", "stale", "mood", "valence", "arousal",
+    }
     assert set(hello["data"]["presence"]) == presence_keys
-    assert set(presence["data"]) == {"sequence", "at", "from_state", "to_state", "identity_id", "display_name", "faces"}
+    assert set(presence["data"]) == {
+        "sequence", "at", "from_state", "to_state", "identity_id", "display_name", "faces", "mood", "valence", "arousal",
+    }
     assert set(store["data"]) == {"sequence", "at", "kind", "identity_id", "display_name", "identity_count"}
     text = json.dumps([f["data"] for f in frames])
     for forbidden in ("encoding", "box", "match_distance", "top", "left"):

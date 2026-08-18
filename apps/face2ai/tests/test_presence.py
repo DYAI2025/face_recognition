@@ -119,5 +119,9 @@ def test_returning_person_after_a_frame_gap_is_a_fresh_arrival():
 def test_wire_models_carry_no_biometrics():
     from face2ai_app.domain.models import Presence, PresenceTransition
 
-    assert set(Presence.model_fields) == {"state", "identity_id", "display_name", "faces", "since", "observed_at", "stale"}
-    assert set(PresenceTransition.model_fields) == {"at", "from_state", "to_state", "identity_id", "display_name", "faces"}
+    assert set(Presence.model_fields) == {
+        "state", "identity_id", "display_name", "faces", "since", "observed_at", "stale", "mood", "valence", "arousal",
+    }
+    assert set(PresenceTransition.model_fields) == {
+        "at", "from_state", "to_state", "identity_id", "display_name", "faces", "mood", "valence", "arousal",
+    }

@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Annotated
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Encoding = list[float]
 
@@ -31,12 +31,48 @@ class DetectedFace(BaseModel):
     encoding: Annotated[Encoding, Field(min_length=128, max_length=128)]
 
 
+EMOTIONS = ("Anger", "Contempt", "Disgust", "Fear", "Happiness", "Neutral", "Sadness", "Surprise")
+
+
+class Expression(BaseModel):
+    """Best-effort facial expression for one face — a mood hint, never a fact, never authentication.
+
+    Wire-safe by construction: labels, scores in 0..1, valence/arousal in -1..1, named blendshape
+    intensities and head pose angles. No landmarks, no pixels, no embeddings.
+    """
+
+    dominant: str
+    scores: dict[str, float] = Field(default_factory=dict)
+    valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+    arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
+    blendshapes: dict[str, float] = Field(default_factory=dict)  # only entries >= 0.2, rounded to 2 decimals
+    yaw: float | None = None
+    pitch: float | None = None
+    roll: float | None = None
+
+    @field_validator("scores")
+    @classmethod
+    def _known_labels(cls, value: dict[str, float]) -> dict[str, float]:
+        unknown = set(value) - set(EMOTIONS)
+        if unknown:
+            raise ValueError(f"unknown emotion labels: {sorted(unknown)}")
+        return value
+
+    @field_validator("dominant")
+    @classmethod
+    def _dominant_known(cls, value: str) -> str:
+        if value not in EMOTIONS:
+            raise ValueError(f"unknown dominant emotion: {value}")
+        return value
+
+
 class FaceObservation(BaseModel):
     box: FaceBox
     matched: bool = False
     identity_id: str | None = None
     display_name: str | None = None
     match_distance: float | None = None
+    expression: Expression | None = None
 
 
 class RecognitionEvent(BaseModel):
@@ -101,6 +137,9 @@ class Presence(BaseModel):
     since: datetime | None = None
     observed_at: datetime | None = None
     stale: bool = False
+    mood: str | None = None
+    valence: float | None = None
+    arousal: float | None = None
 
 
 class PresenceTransition(BaseModel):
@@ -112,6 +151,9 @@ class PresenceTransition(BaseModel):
     identity_id: str | None = None
     display_name: str | None = None
     faces: int = 0
+    mood: str | None = None
+    valence: float | None = None
+    arousal: float | None = None
 
 
 class StoreEventKind(StrEnum):

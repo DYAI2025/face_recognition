@@ -158,10 +158,14 @@ class MoodTracker:
         with self._lock:
             return self._mood, self._valence, self._arousal
 
-    def reset(self) -> None:
-        """Forget everything (camera stopped, presence reset). Emits nothing."""
+    def reset(self, now: datetime | None = None) -> MoodTransition | None:
+        """Forget everything (camera stopped, presence expired or reset).
+
+        Returns the ``mood -> None`` transition if a mood was set (so the wire learns the mood
+        ended, symmetric with a frame-driven end), None otherwise; the smoothing is cleared either way.
+        """
         with self._lock:
+            ended = self._clear_mood(now or _now())
             self._presence_key = None
             self._identity_id = self._display_name = None
-            self._mood = self._valence = self._arousal = None
-            self._clear_smoothing()
+            return ended

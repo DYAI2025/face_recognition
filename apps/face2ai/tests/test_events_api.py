@@ -207,9 +207,7 @@ def test_events_stream_carries_only_the_documented_keys(live, fake_engine, face)
         "state", "identity_id", "display_name", "faces", "since", "observed_at", "stale", "mood", "valence", "arousal",
     }
     assert set(hello["data"]["presence"]) == presence_keys
-    assert set(presence["data"]) == {
-        "sequence", "at", "from_state", "to_state", "identity_id", "display_name", "faces", "mood", "valence", "arousal",
-    }
+    assert set(presence["data"]) == {"sequence", "at", "from_state", "to_state", "identity_id", "display_name", "faces"}
     assert set(store["data"]) == {"sequence", "at", "kind", "identity_id", "display_name", "identity_count"}
     text = json.dumps([f["data"] for f in frames])
     for forbidden in ("encoding", "box", "match_distance", "top", "left"):
@@ -249,13 +247,16 @@ def test_mood_events_and_presence_mood(live, fake_engine, fake_expression, face)
     frames = live.sse("/api/events?after=0", wanted=3, skip_heartbeats=True)
     assert [f["event"] for f in frames] == ["hello", "presence", "mood"]
     assert frames[0]["data"]["presence"]["mood"] == "Happiness"  # hello snapshot carries the mood fields
-    assert frames[1]["data"]["mood"] is None  # the presence transition predates the mood
+    assert "mood" not in frames[1]["data"]  # a presence transition starts a fresh, mood-less presence
     mood = frames[2]["data"]
     assert frames[2]["id"] == "2" and mood["sequence"] == 2
     assert (mood["from_mood"], mood["to_mood"]) == (None, "Happiness")
     assert mood["valence"] == pytest.approx(EMA_VALENCE_2) and mood["arousal"] == pytest.approx(EMA_AROUSAL_2)
     assert (mood["identity_id"], mood["display_name"]) == (None, None)  # UNKNOWN person
     assert set(mood) == {"sequence", "at", "identity_id", "display_name", "from_mood", "to_mood", "valence", "arousal"}
+    text = json.dumps(mood)  # ADR-002 §2 sweep over a mood frame: label + two rounded scalars, never per-frame data
+    for forbidden in ("encoding", "box", "match_distance", "top", "left", "scores", "blendshapes", "dominant"):
+        assert forbidden not in text, forbidden
 
 
 def test_mood_carries_identity_and_ends_when_the_person_leaves(live, fake_engine, fake_expression, face):
@@ -288,20 +289,55 @@ def test_multiple_faces_never_produce_a_mood(live, fake_engine, fake_expression,
     assert [f["event"] for f in frames] == ["hello", "presence", "heartbeat"]
 
 
+def test_expression_toggle_off_ends_the_mood_immediately(live, fake_engine, fake_expression, face):
+    fake_engine.faces = [face]
+    _enable_expression(live, fake_expression, [HAPPY])
+    _recognize(live, times=2)  # seq 1 presence, seq 2 mood ->Happiness
+    assert live.client.get("/api/presence").json()["mood"] == "Happiness"
+    assert live.client.post("/api/expression", json={"enabled": False}).json()["enabled"] is False  # seq 3 mood ->None
+    presence = live.client.get("/api/presence").json()
+    assert (presence["state"], presence["mood"], presence["valence"], presence["arousal"]) == ("UNKNOWN", None, None, None)
+    frames = live.sse("/api/events?after=0", wanted=4)  # heartbeats included: nothing else was buffered
+    assert [f["event"] for f in frames] == ["hello", "presence", "mood", "mood"]
+    ended = frames[3]["data"]
+    assert (ended["from_mood"], ended["to_mood"], ended["valence"], ended["arousal"]) == ("Happiness", None, None, None)
+    live.client.post("/api/expression", json={"enabled": False})  # idempotent: no mood, no event
+    _recognize(live)  # presence unchanged, expressions off: nothing published
+    frames = live.sse("/api/events?after=3", wanted=2)
+    assert [f["event"] for f in frames] == ["hello", "heartbeat"]
+
+
 def test_presence_reset_clears_mood_and_forgets_the_smoothing(live, fake_engine, fake_expression, face):
     fake_engine.faces = [face]
     _enable_expression(live, fake_expression, [HAPPY])
-    _recognize(live, times=2)
+    _recognize(live, times=2)  # seq 1 presence NO_SIGNAL->UNKNOWN, seq 2 mood ->Happiness
     assert live.client.get("/api/presence").json()["mood"] == "Happiness"
-    reset = live.client.post("/api/presence/reset").json()
+    reset = live.client.post("/api/presence/reset").json()  # seq 3 presence UNKNOWN->NO_SIGNAL, seq 4 mood ->None
     assert (reset["state"], reset["mood"], reset["valence"], reset["arousal"]) == ("NO_SIGNAL", None, None, None)
     # The mood tracker was reset too: one frame after the reset cannot re-commit (EMA restarts at 0) ...
-    _recognize(live)
+    _recognize(live)  # seq 5 presence NO_SIGNAL->UNKNOWN
     presence = live.client.get("/api/presence").json()
     assert (presence["state"], presence["mood"]) == ("UNKNOWN", None)
     # ... the second one can.
-    _recognize(live)
+    _recognize(live)  # seq 6 mood ->Happiness
     assert live.client.get("/api/presence").json()["mood"] == "Happiness"
+    # A reset with no mood set publishes the presence transition only.
+    live.client.post("/api/presence/reset")  # seq 7 presence UNKNOWN->NO_SIGNAL, seq 8 mood ->None
+    _recognize(live)  # seq 9 presence NO_SIGNAL->UNKNOWN (no mood yet)
+    live.client.post("/api/presence/reset")  # seq 10 presence UNKNOWN->NO_SIGNAL, no mood event
+    live.client.post("/api/presence/reset")  # already NO_SIGNAL: nothing published
+    frames = live.sse("/api/events?after=0", wanted=11)  # heartbeats included: proves nothing else was buffered
+    kinds = [(f["event"], f["data"].get("to_state", f["data"].get("to_mood"))) for f in frames[1:]]
+    assert kinds == [
+        ("presence", "UNKNOWN"), ("mood", "Happiness"),
+        ("presence", "NO_SIGNAL"), ("mood", None),  # exactly one mood end per reset, right after the presence
+        ("presence", "UNKNOWN"), ("mood", "Happiness"),
+        ("presence", "NO_SIGNAL"), ("mood", None),
+        ("presence", "UNKNOWN"),
+        ("presence", "NO_SIGNAL"),  # no mood was set: no mood event
+    ]
+    ended = frames[4]["data"]
+    assert (ended["from_mood"], ended["to_mood"], ended["valence"], ended["arousal"]) == ("Happiness", None, None, None)
 
 
 def test_stale_presence_expires_to_no_signal_and_is_published(tmp_path: Path, fake_engine, fake_expression, face):
@@ -325,12 +361,15 @@ def test_stale_presence_expires_to_no_signal_and_is_published(tmp_path: Path, fa
             _recognize(live, times=2)  # UNKNOWN (seq 1), mood Happiness (seq 2)
             assert client.get("/api/presence").json()["mood"] == "Happiness"
             time.sleep(0.4)  # longer than stale_seconds: no frames
-            frames = live.sse("/api/events?after=0", wanted=4, skip_heartbeats=True)
-            assert [f["event"] for f in frames] == ["hello", "presence", "mood", "presence"]
+            frames = live.sse("/api/events?after=0", wanted=5, skip_heartbeats=True)
+            assert [f["event"] for f in frames] == ["hello", "presence", "mood", "presence", "mood"]
             hello_presence = frames[0]["data"]["presence"]
             assert (hello_presence["state"], hello_presence["mood"]) == ("NO_SIGNAL", None)  # expired before hello
             assert frames[1]["data"]["to_state"] == "UNKNOWN"
             assert frames[3]["data"]["from_state"] == "UNKNOWN" and frames[3]["data"]["to_state"] == "NO_SIGNAL"
+            # Expiry ends the mood on the wire too, right after the presence it belonged to.
+            ended = frames[4]["data"]
+            assert (ended["from_mood"], ended["to_mood"]) == ("Happiness", None) and ended["at"] == frames[3]["data"]["at"]
             _recognize(live)  # back: fresh arrival, and the mood tracker was reset with the expiry ...
             presence = client.get("/api/presence").json()
             assert (presence["state"], presence["mood"]) == ("UNKNOWN", None)

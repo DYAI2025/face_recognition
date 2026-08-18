@@ -147,7 +147,11 @@ class Presence(BaseModel):
 
 
 class PresenceTransition(BaseModel):
-    """Emitted once per stable presence change; consumers (agents, Party Mirror) subscribe to these."""
+    """Emitted once per stable presence change; consumers (agents, Party Mirror) subscribe to these.
+
+    Carries no mood: a transition starts a fresh, mood-less presence; the mood that ended with the
+    previous presence is announced as ``from_mood`` on the ``mood`` event that follows.
+    """
 
     at: datetime
     from_state: PresenceState
@@ -155,9 +159,6 @@ class PresenceTransition(BaseModel):
     identity_id: str | None = None
     display_name: str | None = None
     faces: int = 0
-    mood: str | None = None
-    valence: float | None = Field(default=None, ge=-1.0, le=1.0)
-    arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
 
 
 class MoodTransition(BaseModel):

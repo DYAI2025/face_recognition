@@ -20,7 +20,7 @@ def test_face_observation_expression_is_optional_and_presence_carries_mood():
     p = Presence(state="KNOWN", mood="Happiness", valence=0.5, arousal=0.1)
     assert p.mood == "Happiness"
     t = PresenceTransition(at="2026-08-18T12:00:00Z", from_state="NO_FACE", to_state="KNOWN")
-    assert t.model_dump()["mood"] is None
+    assert "mood" not in t.model_dump()  # a transition starts a fresh presence; the ended mood rides the mood event
     # wire-contract pin: these labels reach the voice agent and the Hermes plugin
     assert EMOTIONS == ("Anger", "Contempt", "Disgust", "Fear", "Happiness", "Neutral", "Sadness", "Surprise")
 
@@ -33,4 +33,4 @@ def test_scores_and_presence_valence_are_bounded():
     with pytest.raises(ValidationError):
         Presence(state="KNOWN", valence=42.0)
     with pytest.raises(ValidationError):
-        PresenceTransition(at="2026-08-18T12:00:00Z", from_state="NO_FACE", to_state="KNOWN", arousal=-1.5)
+        Presence(state="KNOWN", arousal=-1.5)

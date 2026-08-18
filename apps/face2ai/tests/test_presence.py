@@ -155,6 +155,5 @@ def test_wire_models_carry_no_biometrics():
     assert set(Presence.model_fields) == {
         "state", "identity_id", "display_name", "faces", "since", "observed_at", "stale", "mood", "valence", "arousal",
     }
-    assert set(PresenceTransition.model_fields) == {
-        "at", "from_state", "to_state", "identity_id", "display_name", "faces", "mood", "valence", "arousal",
-    }
+    # No mood on transitions: they start a fresh presence; the ended mood travels on the ``mood`` event.
+    assert set(PresenceTransition.model_fields) == {"at", "from_state", "to_state", "identity_id", "display_name", "faces"}

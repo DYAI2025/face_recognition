@@ -74,17 +74,30 @@ def test_single_none_frame_keeps_mood():
     assert t.current() == before
 
 
-def test_reset_clears_without_transition():
+def test_reset_returns_the_mood_end_and_clears_the_smoothing():
     t = MoodTracker(stable_ticks=2, min_score=0.5)
+    assert t.reset() is None  # nothing set: nothing to announce
     for _ in range(2):
-        t.observe("KNOWN:a", happy(), T0)
+        t.observe("KNOWN:a", happy(), T0, identity_id="a", display_name="Ada")
     assert t.current()[0] == "Happiness"
-    assert t.reset() is None
+    ended = t.reset(T0)
+    assert ended is not None and (ended.from_mood, ended.to_mood) == ("Happiness", None)
+    assert (ended.at, ended.identity_id, ended.display_name) == (T0, "a", "Ada")
     assert t.current() == (None, None, None)
+    assert t.reset() is None  # already None: no second transition
     # EMA and streak are gone too: a fresh commit needs the full stable_ticks again.
     assert t.observe("KNOWN:a", happy(), T0) is None
     tr = t.observe("KNOWN:a", happy(), T0)
     assert tr is not None and (tr.from_mood, tr.to_mood) == (None, "Happiness")
+
+
+def test_reset_without_mood_still_clears_the_streak():
+    t = MoodTracker(stable_ticks=2, min_score=0.5)
+    assert t.observe("KNOWN:a", happy(), T0) is None  # streak 1
+    assert t.reset() is None
+    assert t.observe("KNOWN:a", happy(), T0) is None  # streak restarted: not 2 yet
+    tr = t.observe("KNOWN:a", happy(), T0)
+    assert tr is not None and tr.to_mood == "Happiness"
 
 
 def test_identity_propagates_onto_transitions():

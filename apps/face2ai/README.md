@@ -15,6 +15,8 @@ The application is intentionally local-first. Camera frames are processed in mem
 - recognition: adapter over the repository's existing `face_recognition` package;
 - storage: atomic local JSON file;
 - presence + events: `GET /api/presence`, `GET /api/events` (SSE: `hello`, `presence`, `mood`, `store`, `heartbeat`), `POST /api/presence/reset` — the contract for agents / Party Mirror; no biometrics on the wire;
+  - `presence` — stable presence changed (`from_state` → `to_state`, names, face count); a transition starts a fresh, mood-less presence and carries no mood fields;
+  - `mood` — mood hint began/changed/ended (`from_mood` → `to_mood`, rounded valence/arousal); a `mood` with `to_mood: null` always follows the presence event that ended it (person left, presence expired or was reset), and is also published when expressions are switched off (`POST /api/expression {"enabled": false}`) while a mood is set;
 - no LLM, cloud service, database, or security authorization in the recognition app itself. The optional voice agent (`apps/face2ai-agent/`, ADR-002) is a separate process that consumes the events.
 
 ## Development

@@ -106,10 +106,11 @@ class IdentityService:
         self, image_bytes: bytes, detected: list[DetectedFace], observations: list[FaceObservation]
     ) -> None:
         """Best effort: a failing expression engine leaves ``expression`` None and never breaks recognition."""
-        if not (self.expression_enabled and self.expression_available):
+        engine = self.expression
+        if engine is None or not (self.expression_enabled and engine.available):
             return
         try:
-            expressions = self.expression.analyze(image_bytes, [face.box for face in detected])
+            expressions = engine.analyze(image_bytes, [face.box for face in detected])
         except Exception as exc:
             logger.log(
                 logging.DEBUG if self._expression_warned else logging.WARNING,

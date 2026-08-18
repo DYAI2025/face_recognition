@@ -2,20 +2,28 @@
 // Plain ESM, no build step (JSX not allowed): renders a status-bar chip and a pane that show
 // who is in front of the local camera, fed by the plugin's own backend namespace
 // (`ctx.rest('/presence')` → /api/plugins/face2ai/presence, `ctx.socket('/events')` as accelerator).
-// Nothing biometric ever reaches this UI — Face2AI's stream carries states, names, counts, timestamps
-// and a hedged mood hint ("wirkt …" — a best-effort guess from facial expression, never a fact).
+// Nothing biometric ever reaches this UI — Face2AI's stream carries states, names, counts, timestamps,
+// a hedged mood hint ("wirkt …" — a best-effort guess from facial expression, never a fact) and completed
+// facial actions ("kurzes Lächeln (0.9 s)" — expression dynamics at ~0.6 s resolution, no micro-expressions).
+// The pane adds a valence sparkline from Face2AI's in-memory timeline (`ctx.rest('/timeline?seconds=600')`),
+// bounded and cleared on presence reset/restart — nothing is stored long-term anywhere.
 import { PALETTE_AREA, PANES_AREA, STATUSBAR_AREAS, haptic } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const POLL_MS = 4000
+const TIMELINE_SECONDS = 600
+const EMPTY_TIMELINE = { seconds: TIMELINE_SECONDS, samples: [], moods: [], actions: [] }
 const listeners = new Set()
 let latest = { source: 'none', presence: { state: 'NO_SIGNAL' }, connected: false }
 let history = []
+let moods = [] // last mood changes (`to_mood` set) as they came off the wire, newest last
+let actions = [] // last completed facial actions, newest last
+let timeline = EMPTY_TIMELINE // Face2AI's in-memory affect history (samples for the sparkline)
 let pluginCtx = null
 
 function publish() {
-  for (const fn of listeners) fn({ latest, history })
+  for (const fn of listeners) fn({ latest, history, moods, actions, timeline })
 }
 
 async function refresh() {
@@ -23,8 +31,17 @@ async function refresh() {
   try {
     latest = await pluginCtx.rest('/presence')
     if (latest && Array.isArray(latest.history)) history = latest.history
+    // Snapshot fallback (gateway state file) also carries the last few moods/actions — seed from it.
+    if (latest && Array.isArray(latest.moods)) moods = latest.moods.filter((m) => m && m.to_mood).slice(-20)
+    if (latest && Array.isArray(latest.actions)) actions = latest.actions.slice(-10)
   } catch (error) {
     latest = { source: 'error', error: String(error && error.message ? error.message : error), presence: { state: 'NO_SIGNAL' }, connected: false }
+  }
+  try {
+    const t = await pluginCtx.rest(`/timeline?seconds=${TIMELINE_SECONDS}`)
+    timeline = t && Array.isArray(t.samples) ? t : EMPTY_TIMELINE
+  } catch (error) {
+    timeline = { ...EMPTY_TIMELINE, error: String(error && error.message ? error.message : error) }
   }
   publish()
 }
@@ -41,6 +58,10 @@ function onFrame(frame) {
   } else if (event === 'mood' && data) {
     // Hint began/changed/ended (`to_mood: null`); never a transition, never a reaction.
     latest = { ...latest, presence: { ...(latest.presence || {}), mood: data.to_mood ?? null, valence: data.valence ?? null, arousal: data.arousal ?? null } }
+    if (data.to_mood) moods = [...moods.slice(-19), data]
+  } else if (event === 'action' && data) {
+    // A completed facial action: history only — never touches presence, never a reaction.
+    actions = [...actions.slice(-9), data]
   } else if (event === 'lost') {
     latest = { ...latest, connected: false, source: 'lost', error: data && data.error }
   }
@@ -48,7 +69,7 @@ function onFrame(frame) {
 }
 
 function usePresence() {
-  const [state, setState] = useState({ latest, history })
+  const [state, setState] = useState({ latest, history, moods, actions, timeline })
   useEffect(() => {
     listeners.add(setState)
     return () => listeners.delete(setState)
@@ -87,6 +108,55 @@ function moodLabel(presence) {
   return `wirkt ${word}${parts.length ? ` (${parts.join(', ')})` : ''}`
 }
 
+// Hedged facial-action wording — same literal table as Face2AI's UI (model.js) and the gateway half (presence.py).
+// Timing is quantized to the browser loop (~0.6 s): "kurzes" ≤ 1 s, "anhaltendes" ≥ 5 s — dynamics, not micro-expressions.
+const ACTION_LABELS = { smile: 'Lächeln', frown: 'Mundwinkel runter', brow_raise: 'Brauen hoch', brow_furrow: 'Stirnrunzeln', eye_squint: 'Augen zusammengekniffen', eyes_wide: 'Augen weit', nose_wrinkle: 'Nasenrümpfen', lip_press: 'Lippen gepresst' }
+
+/** "kurzes Lächeln (0.9 s)" / "Brauen hoch (2.3 s)" / "anhaltendes Lächeln (6.0 s)"; '' without an action; unknown labels stay hedged. */
+function actionLabel(a) {
+  if (!a || typeof a.action !== 'string' || !a.action) return ''
+  const word = Object.hasOwn(ACTION_LABELS, a.action) ? ACTION_LABELS[a.action] : a.action.toLowerCase().replaceAll('_', ' ')
+  const ms = typeof a.duration_ms === 'number' && Number.isFinite(a.duration_ms) ? a.duration_ms : null
+  const qualifier = ms === null ? '' : ms <= 1000 ? 'kurzes ' : ms >= 5000 ? 'anhaltendes ' : ''
+  return `${qualifier}${word}${ms === null ? '' : ` (${(ms / 1000).toFixed(1)} s)`}`
+}
+
+/** "wirkt fröhlich" for a mood transition (`to_mood`); '' when the mood ended. */
+function moodWord(toMood) {
+  if (typeof toMood !== 'string' || !toMood) return ''
+  return `wirkt ${Object.hasOwn(MOOD_LABELS, toMood) ? MOOD_LABELS[toMood] : toMood.toLowerCase()}`
+}
+
+const SPARK_W = 240
+const SPARK_H = 28
+
+/** Polyline points for valence samples (−1..1 → bottom..top), oldest left / newest right; '' below 2 points. */
+function sparklinePoints(samples, w = SPARK_W, h = SPARK_H) {
+  const values = (samples || []).map((s) => (s && typeof s.valence === 'number' && Number.isFinite(s.valence) ? Math.max(-1, Math.min(1, s.valence)) : null)).filter((v) => v !== null)
+  if (values.length < 2) return ''
+  const n = values.length
+  return values.map((v, i) => `${((i / (n - 1)) * w).toFixed(1)},${(((1 - v) / 2) * h).toFixed(1)}`).join(' ')
+}
+
+/** Plain SVG (no JSX): a valence line over Face2AI's timeline samples with a zero line; nothing when < 2 points. */
+function Sparkline({ samples }) {
+  const points = sparklinePoints(samples)
+  if (!points) return null
+  return jsxs('svg', {
+    width: '100%',
+    height: SPARK_H,
+    viewBox: `0 0 ${SPARK_W} ${SPARK_H}`,
+    preserveAspectRatio: 'none',
+    role: 'img',
+    'aria-label': 'Valenz-Verlauf (Vermutung aus dem Gesichtsausdruck, keine Tatsache)',
+    style: { display: 'block' },
+    children: [
+      jsx('line', { x1: 0, y1: SPARK_H / 2, x2: SPARK_W, y2: SPARK_H / 2, stroke: 'currentColor', strokeOpacity: 0.25, strokeWidth: 1, vectorEffect: 'non-scaling-stroke' }),
+      jsx('polyline', { points, fill: 'none', stroke: 'var(--ui-accent, #82f3d4)', strokeWidth: 1.5, strokeLinejoin: 'round', strokeLinecap: 'round', vectorEffect: 'non-scaling-stroke' }),
+    ],
+  })
+}
+
 function labelFor(presence, lang = 'de') {
   const p = presence || {}
   const state = p.state || 'NO_SIGNAL'
@@ -117,13 +187,19 @@ function Chip() {
   })
 }
 
+const HEDGE_TITLE = 'Vermutung aus dem Gesichtsausdruck, keine Tatsache'
+const RESOLUTION_HINT = 'Auflösung ~0,6 s — Ausdrucksdynamik, keine Mikroexpressionen'
+
 function Pane() {
-  const { latest: current, history: items } = usePresence()
+  const { latest: current, history: items, moods: moodItems, actions: actionItems, timeline: tl } = usePresence()
   const p = current.presence || {}
   const { text, tone } = labelFor(p)
   const rows = [...items].reverse().slice(0, 12)
+  const samples = (tl && Array.isArray(tl.samples) ? tl.samples : []).filter((s) => !p.identity_id || (s && s.identity_id === p.identity_id))
+  const moodRows = moodItems.filter((m) => m && m.to_mood).slice(-6).reverse()
+  const actionRows = actionItems.slice(-5).reverse()
   return jsxs('div', {
-    className: 'flex h-full flex-col gap-3 p-3 text-sm',
+    className: 'flex h-full flex-col gap-3 overflow-y-auto p-3 text-sm',
     children: [
       jsxs('div', {
         className: 'flex items-baseline justify-between',
@@ -136,10 +212,53 @@ function Pane() {
         children: [
           jsx('div', { className: `text-2xl font-semibold ${TONE_CLASS[tone]}`, children: text }),
           jsx('div', { className: 'text-(--ui-text-tertiary)', children: `${p.state || 'NO_SIGNAL'} · ${p.faces || 0} ${p.faces === 1 ? 'Gesicht' : 'Gesichter'}${p.since ? ' · seit ' + fmtTime(p.since) : ''}${p.stale ? ' · keine frischen Frames' : ''}` }),
-          moodLabel(p) ? jsx('div', { className: 'text-[0.75rem] text-(--ui-text-tertiary)', title: 'Vermutung aus dem Gesichtsausdruck, keine Tatsache', children: moodLabel(p) }) : null,
+          moodLabel(p) ? jsx('div', { className: 'text-[0.75rem] text-(--ui-text-tertiary)', title: HEDGE_TITLE, children: moodLabel(p) }) : null,
         ],
       }),
       current.error ? jsx('div', { className: 'text-[0.75rem] text-(--ui-warning, #f4ce8a)', children: String(current.error) }) : null,
+      jsxs('div', {
+        className: 'flex flex-col gap-1',
+        title: HEDGE_TITLE,
+        children: [
+          jsx('div', { className: 'text-[0.6875rem] uppercase tracking-wider text-(--ui-text-tertiary)', children: 'Valenz · letzte 10 min' }),
+          sparklinePoints(samples)
+            ? jsx(Sparkline, { samples })
+            : jsx('div', { className: 'text-[0.75rem] text-(--ui-text-tertiary)', children: 'Noch kein Verlauf.' }),
+          jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: RESOLUTION_HINT }),
+        ],
+      }),
+      jsxs('div', {
+        className: 'flex flex-col gap-1',
+        title: HEDGE_TITLE,
+        children: [
+          jsx('div', { className: 'text-[0.6875rem] uppercase tracking-wider text-(--ui-text-tertiary)', children: 'Stimmung zuletzt' }),
+          moodRows.length === 0
+            ? jsx('div', { className: 'text-(--ui-text-tertiary)', children: 'Noch keine Hinweise.' })
+            : moodRows.map((m, i) => jsxs('div', {
+                className: 'flex justify-between gap-2 text-[0.75rem]',
+                children: [
+                  jsx('span', { className: 'text-(--ui-text-tertiary)', children: fmtTime(m.at) }),
+                  jsx('span', { children: `${m.display_name ? m.display_name + ' · ' : ''}${moodWord(m.to_mood)}` }),
+                ],
+              }, `${m.at || i}-${i}`)),
+        ],
+      }),
+      jsxs('div', {
+        className: 'flex flex-col gap-1',
+        title: HEDGE_TITLE,
+        children: [
+          jsx('div', { className: 'text-[0.6875rem] uppercase tracking-wider text-(--ui-text-tertiary)', children: 'Ausdruck zuletzt' }),
+          actionRows.length === 0
+            ? jsx('div', { className: 'text-(--ui-text-tertiary)', children: 'Noch keine Ausdrücke.' })
+            : actionRows.map((a, i) => jsxs('div', {
+                className: 'flex justify-between gap-2 text-[0.75rem]',
+                children: [
+                  jsx('span', { className: 'text-(--ui-text-tertiary)', children: fmtTime(a.at) }),
+                  jsx('span', { children: `${a.display_name ? a.display_name + ' · ' : ''}${actionLabel(a)}` }),
+                ],
+              }, `${a.at || i}-${i}`)),
+        ],
+      }),
       jsxs('div', {
         className: 'flex flex-col gap-1',
         children: [

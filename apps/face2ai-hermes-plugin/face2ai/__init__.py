@@ -9,7 +9,10 @@
 - Optional: announce arrivals proactively (``announce_arrivals`` + ``allow_gateway_injection``).
 
 Wire contract (Face2AI apps/face2ai, ADR-002): states, display names, counts, timestamps, plus a
-hedged mood hint (label + valence/arousal — "wirkt …", never a fact, never a gate for anything).
+hedged mood hint (label + valence/arousal — "wirkt …", never a fact, never a gate for anything) and
+completed facial actions (label + onset/apex/offset timestamps + one peak — "kurzes Lächeln (0.9 s)",
+expression dynamics at ~0.6 s resolution, kept as history for the pane/`/presence`, never spoken into
+the LLM context).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from .presence import PresenceStore, SseFrame, context_line, describe, parse_sse
+from .presence import PresenceStore, SseFrame, action_sentence, context_line, describe, parse_sse
 
 logger = logging.getLogger("hermes.plugins.face2ai")
 
@@ -110,7 +113,7 @@ async def _consume_events() -> None:
 
 def _handle_frame(frame: SseFrame) -> None:
     transition = _store.apply(frame)
-    if frame.event in ("hello", "presence", "store", "heartbeat", "mood"):
+    if frame.event in ("hello", "presence", "store", "heartbeat", "mood", "action"):
         _persist()
     if transition is not None:
         _emit_change(transition)
@@ -221,6 +224,9 @@ def _cmd_presence(raw_args: str = "") -> str:
     if snap["history"]:
         lines = [f"- {t['at'][11:19]}  {t['from_state']} → {t['to_state']}" + (f" ({t['display_name']})" if t.get("display_name") else "") for t in snap["history"][-6:]]
         text += "\n" + ("Letzte Übergänge:" if lang.startswith("de") else "Recent transitions:") + "\n" + "\n".join(lines)
+    shown = [f"{action_sentence(a, language=lang)} ({str(a.get('at') or '')[11:19]})" for a in snap["actions"][-3:] if action_sentence(a, language=lang)]
+    if shown:  # facial actions: history for the human asking, deliberately not part of the injected context
+        text += "\n" + ("Zuletzt gezeigt: " if lang.startswith("de") else "Recently shown: ") + ", ".join(shown)
     return text
 
 
@@ -229,8 +235,9 @@ PRESENCE_TOOL_SCHEMA = {
     "description": (
         "Who is in front of the local camera right now according to Face2AI (states NO_SIGNAL, NO_FACE, "
         "UNKNOWN, KNOWN with display_name, MULTIPLE_FACES), plus recent transitions and, if any, a hedged mood "
-        "hint (mood/valence/arousal — 'wirkt …', a best-effort guess from facial expression, never a fact). "
-        "Best-effort recognition, never certainty and never authentication."
+        "hint (mood/valence/arousal — 'wirkt …', a best-effort guess from facial expression, never a fact) and the "
+        "last few mood changes / completed facial actions (e.g. a brief smile, ~0.6 s timing resolution — expression "
+        "dynamics, not micro-expressions, never facts). Best-effort recognition, never certainty and never authentication."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }

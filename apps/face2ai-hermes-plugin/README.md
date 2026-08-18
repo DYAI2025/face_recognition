@@ -9,7 +9,7 @@ Mac                                              Hermes host (VPS)
 Face2AI :8765 ──SSE /api/events──▶ (ssh -R 8765) ──▶ gateway plugin `face2ai`
    ▲                                                  ├─ pre_llm_call → "[face2ai] Ben steht vor der Kamera …" in every turn
    │ ctx.rest via dashboard :9119 (ssh -L)             ├─ tool presence_now, /presence, system-prompt section
-Hermes desktop app (plugin desktop/plugin.js) ◀────── └─ dashboard/plugin_api.py → /api/plugins/face2ai/{presence,history,health,events}
+Hermes desktop app (plugin desktop/plugin.js) ◀────── └─ dashboard/plugin_api.py → /api/plugins/face2ai/{presence,history,timeline,health,events}
 ```
 
 One installable folder (`face2ai/`), two halves, both opt-in:
@@ -38,6 +38,23 @@ One installable folder (`face2ai/`), two halves, both opt-in:
   plugin state file for the dashboard process — overwritten, no history (the snapshot's `history` holds only the last
   10 presence transitions: states, names, timestamps — never a mood). The system-prompt section tells
   Hermes to treat it as a guess — never state it as a fact, never psychoanalyse or probe.
+- **History + timeline** (Face2AI expression stage 2): Face2AI keeps a *bounded in-memory* affect history per
+  session — live valence/arousal samples, mood changes and completed facial actions (SSE `action`:
+  `smile | frown | brow_raise | brow_furrow | eye_squint | eyes_wide | nose_wrinkle | lip_press` with
+  onset/apex/offset timestamps, one peak, `duration_ms`) — cleared on `POST /api/presence/reset` and on restart.
+  The plugin mirrors it minimally: `PresenceStore` keeps the last 50 `mood` and 30 `action` frames as they came off
+  the wire, and the persisted snapshot (plugin state file, dashboard API, `presence_now`) carries the current values
+  plus the last 20 moods / 10 actions — no long-term storage, overwritten on every frame. `/presence` appends
+  "Zuletzt gezeigt: kurzes Lächeln (12:00:03), …" (last 3 actions); the **agent/LLM context does not include
+  actions** (`describe()` / the `[face2ai]` line stay mood-only — actions would be noise there). Wording is hedged
+  and quantised: `action_sentence()` → "kurzes Lächeln (0.9 s)" (≤ 1 s), "Brauen hoch (2.3 s)", "anhaltendes
+  Lächeln (6.0 s)" (≥ 5 s) — timing resolution is the browser loop (~0.6 s), so these are expression *dynamics*,
+  never micro-expressions. `GET /api/plugins/face2ai/timeline?seconds=600[&identity_id=…]` proxies Face2AI's
+  `GET /api/expression/timeline` (10..3600 s, clamped; on error the same shape with empty lists) for the desktop
+  pane, which draws a valence sparkline (last 10 min, filtered to the person currently in front of the camera),
+  "Stimmung zuletzt" (last 6 mood changes) and "Ausdruck zuletzt" (last 5 actions), each with the tooltip
+  "Vermutung aus dem Gesichtsausdruck, keine Tatsache" and the hint "Auflösung ~0,6 s — Ausdrucksdynamik, keine
+  Mikroexpressionen".
 - **Static explanation** in the system prompt: what the `[face2ai]` line means, best-effort, never guess names, never authentication, mood hints are guesses ("wirkt …"), never facts.
 - **Optional proactive**: `announce_arrivals: true` + `plugins.entries.face2ai.allow_gateway_injection: true` →
   on a fresh `→ KNOWN` transition the plugin injects a user-turn into the most recent gateway session
@@ -56,13 +73,16 @@ Mac's Tailscale address.
 
 ## Privacy
 
-Only what Face2AI publishes: states, display names, counts, timestamps. No frames, boxes, encodings
-or match distances leave the Mac (guarded by Face2AI's tests).
+Only what Face2AI publishes: states, display names, counts, timestamps, plus the hedged expression hints
+(mood label + rounded valence/arousal, action label + onset/apex/offset + one peak). No frames, boxes,
+landmarks, blendshape series, encodings or match distances leave the Mac (guarded by Face2AI's tests), and
+nothing about expression is stored long-term on either side.
 
 ## Verify
 
 ```bash
-uv run --project ../face2ai --with pytest pytest tests            # 14 unit tests, no Hermes needed
+uv run --no-project --with pytest==9.0.2 pytest tests             # 20 unit tests, no Hermes needed (the 2 /timeline API tests skip without fastapi)
+uv run --no-project --with pytest==9.0.2 --with fastapi --with httpx pytest tests   # 22 incl. the /timeline proxy tests
 ssh hermes-brain 'bash -lc "hermes plugins list | grep face2ai; curl -s 127.0.0.1:8765/api/presence"'
 curl -s -H "Authorization: Bearer <dashboard token>" http://127.0.0.1:9119/api/plugins/face2ai/health   # via the 9119 tunnel
 # then ask Hermes (desktop / telegram / voice agent): "Wer steht gerade vor der Kamera?"

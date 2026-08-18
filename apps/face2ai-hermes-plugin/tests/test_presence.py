@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from face2ai.presence import MOOD_WORDS, PresenceStore, SseFrame, context_line, describe, parse_sse  # noqa: E402
+from face2ai.presence import ACTION_WORDS, MOOD_WORDS, PresenceStore, SseFrame, action_sentence, context_line, describe, parse_sse  # noqa: E402
 
 T0 = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
 
@@ -129,3 +130,58 @@ def test_mood_word_tables_cover_exactly_the_eight_wire_labels():
     assert set(MOOD_WORDS["de"]["labels"]) == set(MOOD_WORDS["en"]["labels"]) == expected
     for words in MOOD_WORDS.values():
         assert all(isinstance(v, str) and v for v in words["labels"].values())
+
+
+def test_store_keeps_mood_and_action_history_and_snapshot_carries_them():
+    store = PresenceStore()
+    store.apply(SseFrame("hello", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ben"}}), now=T0)
+    assert store.apply(SseFrame("mood", {"sequence": 1, "at": "2026-08-18T12:00:00Z", "identity_id": "a", "display_name": "Ben", "from_mood": None, "to_mood": "Happiness", "valence": 0.6, "arousal": 0.1}), now=T0) is None
+    assert store.apply(SseFrame("action", {"sequence": 2, "at": "2026-08-18T12:00:03Z", "identity_id": "a", "display_name": "Ben", "action": "smile", "onset_at": "2026-08-18T12:00:01Z", "apex_at": "2026-08-18T12:00:02Z", "offset_at": "2026-08-18T12:00:03Z", "peak": 0.9, "duration_ms": 2000, "frames": 4}), now=T0) is None
+    snap = store.snapshot()
+    assert snap["moods"][-1]["to_mood"] == "Happiness" and snap["actions"][-1]["action"] == "smile"
+    assert set(snap) == {"connected", "engine_available", "identity_count", "last_frame_at", "last_error", "presence", "history", "moods", "actions"}
+    # raw wire dicts only (nothing invented, nothing dropped), JSON friendly, action never touches presence/history
+    assert snap["actions"][-1] == {"sequence": 2, "at": "2026-08-18T12:00:03Z", "identity_id": "a", "display_name": "Ben", "action": "smile", "onset_at": "2026-08-18T12:00:01Z", "apex_at": "2026-08-18T12:00:02Z", "offset_at": "2026-08-18T12:00:03Z", "peak": 0.9, "duration_ms": 2000, "frames": 4}
+    json.dumps(snap)
+    assert store.current.mood == "Happiness" and len(store.history) == 0
+    # a mood end is history too (frozen valence/arousal live in the frame), and the snapshot is bounded: last 20 / last 10
+    store.apply(SseFrame("mood", {"sequence": 3, "at": "2026-08-18T12:00:09Z", "identity_id": "a", "from_mood": "Happiness", "to_mood": None}), now=T0)
+    assert store.snapshot()["moods"][-1]["to_mood"] is None and store.current.mood is None
+    for i in range(60):
+        store.apply(SseFrame("mood", {"sequence": 10 + i, "at": T0.isoformat(), "from_mood": None, "to_mood": "Neutral"}), now=T0)
+        store.apply(SseFrame("action", {"sequence": 100 + i, "at": T0.isoformat(), "action": "frown", "duration_ms": 600 + i}), now=T0)
+    snap = store.snapshot()
+    assert len(store.moods) == 50 and len(store.actions) == 30
+    assert len(snap["moods"]) == 20 and len(snap["actions"]) == 10 and snap["actions"][-1]["duration_ms"] == 659
+
+
+def test_action_sentence_is_hedged():
+    assert action_sentence({"action": "smile", "duration_ms": 900}, language="de") == "kurzes Lächeln (0.9 s)"
+    assert action_sentence({"action": "brow_raise", "duration_ms": 2300}, language="en") == "brow raise (2.3 s)"
+    assert action_sentence({"action": "wink", "duration_ms": 900}, language="de") == "kurzes wink (0.9 s)"
+    assert action_sentence({"action": "smile", "duration_ms": 6000}, language="de") == "anhaltendes Lächeln (6.0 s)"
+    assert action_sentence({"action": "smile", "duration_ms": 6000}, language="en") == "held smile (6.0 s)"
+    assert action_sentence({"action": "lip_press", "duration_ms": 1000}, language="en") == "brief lip press (1.0 s)"
+    assert action_sentence({"action": "eyes_wide", "duration_ms": 4999}, language="de") == "Augen weit (5.0 s)"
+    assert action_sentence({"action": "smile", "duration_ms": "soon"}, language="de") == "Lächeln"  # non-numeric duration → no parentheses
+    assert action_sentence({"action": "smile"}, language="en") == "smile"
+    assert action_sentence({}, language="de") == "" and action_sentence(None, language="en") == ""  # never raises
+    assert action_sentence({"action": "eye_squint", "duration_ms": 900}, language="fr") == "brief eye squint (0.9 s)"  # unknown language → en
+
+
+def test_action_word_tables_cover_exactly_the_eight_wire_actions():
+    """Drift guard: both languages must translate exactly the 8 action labels Face2AI puts on the wire
+    (domain.models.ACTIONS)."""
+    expected = {"smile", "frown", "brow_raise", "brow_furrow", "eye_squint", "eyes_wide", "nose_wrinkle", "lip_press"}
+    assert set(ACTION_WORDS["de"]["labels"]) == set(ACTION_WORDS["en"]["labels"]) == expected
+    for words in ACTION_WORDS.values():
+        assert all(isinstance(v, str) and v for v in words["labels"].values())
+
+
+def test_describe_does_not_speak_actions_into_context():
+    store = PresenceStore()
+    store.apply(SseFrame("hello", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ben"}}), now=T0)
+    store.apply(SseFrame("action", {"sequence": 1, "at": T0.isoformat(), "identity_id": "a", "display_name": "Ben", "action": "smile", "duration_ms": 900}), now=T0)
+    text = describe(store, now=T0)
+    assert text.startswith("Ben steht vor der Kamera") and "Lächeln" not in text and "smile" not in text
+    assert "smile" not in describe(store, now=T0, language="en")

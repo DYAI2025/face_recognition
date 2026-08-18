@@ -127,3 +127,21 @@ def test_mood_frames_are_persisted_and_the_system_section_hedges_them():
     assert "Ben wirkt fröhlich" in ctx.hooks["pre_llm_call"](platform="desktop")["context"]
     assert "'wirkt" in ctx.sections["face2ai"] and "never state them as facts" in ctx.sections["face2ai"] and "psychoanaly" in ctx.sections["face2ai"]
     assert "never a fact" in ctx.tools["presence_now"][0]["description"]
+
+
+def test_action_frames_are_persisted_but_never_a_transition_or_announcement_or_context():
+    ctx = FakeCtx({"announce_arrivals": True})
+    plugin.register(ctx)
+    plugin._last_session_key["desktop"] = "agent:main:desktop:dm:1"
+    plugin._handle_frame(SseFrame("hello", {"presence": {"state": "KNOWN", "display_name": "Ben", "identity_id": "a"}, "last_sequence": 0}))
+    now = datetime.now(timezone.utc).isoformat()
+    plugin._handle_frame(SseFrame("action", {"sequence": 1, "at": now, "identity_id": "a", "display_name": "Ben", "action": "smile", "onset_at": now, "apex_at": now, "offset_at": now, "peak": 0.9, "duration_ms": 900, "frames": 2}))
+    snap = ctx.state.get("snapshot")
+    assert snap["actions"] and snap["actions"][-1]["action"] == "smile" and snap["moods"] == []  # dashboard API sees it
+    assert not [e for e in ctx.emitted if e[0] == "presence_changed"] and ctx.injected == []  # an action is never a transition or an announcement
+    context = ctx.hooks["pre_llm_call"](platform="desktop")["context"]
+    assert context.startswith("[face2ai] Ben steht vor der Kamera") and "Lächeln" not in context and "smile" not in context  # actions are not spoken into context
+    text = ctx.commands["presence"]("")
+    assert "Zuletzt gezeigt: kurzes Lächeln" in text  # but /presence lists them
+    tool = json.loads(ctx.tools["presence_now"][1]({}))
+    assert tool["actions"][-1]["duration_ms"] == 900 and "smile" not in tool["summary"]

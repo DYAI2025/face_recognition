@@ -3,6 +3,8 @@ dashboard / `hermes serve` process (the one the desktop app talks to).
 
 - GET  /presence   live presence (proxied from Face2AI; falls back to the gateway's persisted snapshot)
 - GET  /history    recent transitions as recorded by the gateway-side consumer
+- GET  /timeline   Face2AI's in-memory affect history (valence/arousal samples, mood changes, facial
+                   actions of the last `seconds`, optional `identity_id`) proxied for the pane sparkline
 - GET  /health     plugin + Face2AI reachability
 - WS   /events     live twin for the desktop pane: relays Face2AI's SSE frames as JSON
 """
@@ -15,13 +17,15 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("hermes.plugins.face2ai.api")
 router = APIRouter()
 
 PLUGIN_ID = "face2ai"
 DEFAULT_EVENTS_URL = "http://127.0.0.1:8765"
+TIMELINE_DEFAULT_SECONDS = 600
+TIMELINE_MIN_SECONDS, TIMELINE_MAX_SECONDS = 10, 3600  # Face2AI's own bounds for GET /api/expression/timeline
 
 
 def _settings() -> dict[str, Any]:
@@ -80,6 +84,29 @@ async def presence() -> dict[str, Any]:
 async def history() -> dict[str, Any]:
     snap = _snapshot_from_state() or {}
     return {"history": snap.get("history", []), "connected": snap.get("connected", False), "last_frame_at": snap.get("last_frame_at")}
+
+
+@router.get("/timeline")
+async def timeline(seconds: int = Query(default=TIMELINE_DEFAULT_SECONDS), identity_id: str | None = Query(default=None, max_length=80)) -> dict[str, Any]:
+    """Proxy of Face2AI's ``GET /api/expression/timeline`` — bounded, in memory on the Face2AI side, cleared on
+    presence reset/restart; hints, never facts. ``seconds`` is clamped to Face2AI's range instead of failing so the
+    pane always gets a well-formed answer; on any error the shape stays the same with empty lists."""
+    seconds = max(TIMELINE_MIN_SECONDS, min(TIMELINE_MAX_SECONDS, int(seconds)))
+    params: dict[str, Any] = {"seconds": seconds}
+    if identity_id:
+        params["identity_id"] = identity_id
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{_events_url()}/api/expression/timeline", params=params)
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError("unexpected timeline payload")
+            return {"seconds": body.get("seconds", seconds), "samples": body.get("samples") or [], "moods": body.get("moods") or [], "actions": body.get("actions") or []}
+    except Exception as exc:
+        return {"error": str(exc), "seconds": seconds, "samples": [], "moods": [], "actions": []}
 
 
 @router.get("/health")

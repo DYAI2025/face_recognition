@@ -2,7 +2,9 @@
 
 Pure Python (stdlib only) so it unit-tests without Hermes and can be imported by both the
 gateway plugin (writer) and the dashboard API (reader). Nothing here handles frames or face
-encodings — Face2AI's event stream never carries them; a mood is a hedged hint ("wirkt …"), never a fact.
+encodings — Face2AI's event stream never carries them; a mood is a hedged hint ("wirkt …"), never a fact,
+and a facial action ("kurzes Lächeln (0.9 s)") is expression *dynamics* at ~0.6 s resolution, never a
+micro-expression and never a fact either.
 """
 
 from __future__ import annotations
@@ -55,6 +57,47 @@ def mood_sentence(mood: str | None, valence: float | None, arousal: float | None
     detail = f" ({', '.join(numbers)})" if numbers else ""
     dash = "–" if words is MOOD_WORDS["de"] else "—"
     return f"{subject or words['generic_subject']} {words['prefix']}{label}{detail} {dash} {words['hedge']}."
+
+
+# Hedged wording for Face2AI's facial action labels (apps/face2ai domain/models.py ACTIONS). Same literal table as
+# the Face2AI UI (static/js/model.js). Timing is quantized to the browser loop (~0.6 s): "brief" ≤ 1 s, "held" ≥ 5 s —
+# expression dynamics, never micro-expressions; a hint about what a face *did*, never what someone *felt*.
+ACTION_WORDS: dict[str, dict[str, Any]] = {
+    "de": {
+        "labels": {"smile": "Lächeln", "frown": "Mundwinkel runter", "brow_raise": "Brauen hoch", "brow_furrow": "Stirnrunzeln",
+                   "eye_squint": "Augen zusammengekniffen", "eyes_wide": "Augen weit", "nose_wrinkle": "Nasenrümpfen", "lip_press": "Lippen gepresst"},
+        "brief": "kurzes ", "held": "anhaltendes ",
+    },
+    "en": {
+        "labels": {"smile": "smile", "frown": "frown", "brow_raise": "brow raise", "brow_furrow": "brow furrow",
+                   "eye_squint": "eye squint", "eyes_wide": "eyes wide", "nose_wrinkle": "nose wrinkle", "lip_press": "lip press"},
+        "brief": "brief ", "held": "held ",
+    },
+}
+ACTION_BRIEF_MS = 1000  # ≤ → "brief"/"kurzes"
+ACTION_HELD_MS = 5000  # ≥ → "held"/"anhaltendes"
+
+
+def action_sentence(data: Any, *, language: str = "de") -> str:
+    """One hedged phrase for a completed facial action, e.g. "kurzes Lächeln (0.9 s)" / "brow raise (2.3 s)" /
+    "anhaltendes Lächeln (6.0 s)". Empty string when there is no action label. Unknown labels are lower-cased
+    (``_`` → space) and still qualified; a non-numeric ``duration_ms`` drops the parentheses; never raises."""
+    if not isinstance(data, dict):
+        return ""
+    action = data.get("action")
+    if not isinstance(action, str) or not action:
+        return ""
+    words = ACTION_WORDS["de"] if language.lower().startswith("de") else ACTION_WORDS["en"]
+    label = words["labels"].get(action, action.lower().replace("_", " "))
+    duration = _number(data.get("duration_ms"))
+    qualifier = ""
+    if duration is not None:
+        if duration <= ACTION_BRIEF_MS:
+            qualifier = words["brief"]
+        elif duration >= ACTION_HELD_MS:
+            qualifier = words["held"]
+    detail = f" ({duration / 1000:.1f} s)" if duration is not None else ""
+    return f"{qualifier}{label}{detail}"
 
 
 @dataclass(frozen=True)
@@ -181,6 +224,10 @@ class PresenceStore:
         self.last_frame_at: datetime | None = None
         self.hello_sequence = 0
         self.history: deque[Transition] = deque(maxlen=history)
+        # Expression history as it came off the wire (raw dicts: labels, names, timestamps, rounded floats).
+        # Bounded, in memory, mirrors Face2AI's own ring buffers — a mood end (``to_mood`` None) is history too.
+        self.moods: deque[dict[str, Any]] = deque(maxlen=50)
+        self.actions: deque[dict[str, Any]] = deque(maxlen=30)
         self.identity_count: int | None = None
         self.last_error: str | None = None
 
@@ -224,6 +271,10 @@ class PresenceStore:
                 return None
             if frame.event == "mood":  # hint changed/ended: not a transition, never a reaction
                 self.current = self.current.with_mood(frame.data)
+                self.moods.append(dict(frame.data))
+                return None
+            if frame.event == "action":  # completed facial action: history only — never touches presence, never a reaction
+                self.actions.append(dict(frame.data))
                 return None
             return None
 
@@ -244,6 +295,8 @@ class PresenceStore:
                 "last_error": self.last_error,
                 "presence": self.current.to_dict(),
                 "history": [t.to_dict() for t in list(self.history)[-10:]],
+                "moods": list(self.moods)[-20:],
+                "actions": list(self.actions)[-10:],
             }
 
     def age_seconds(self, now: datetime | None = None) -> float | None:

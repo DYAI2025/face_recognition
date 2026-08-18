@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from face2ai_app.adapters.json_identity_store import JsonIdentityStore
@@ -121,3 +122,38 @@ def test_env_opt_in_enables_available_engine(tmp_path: Path, fake_engine, fake_e
     fake_engine.faces = [face]
     fake_expression.expressions = [HAPPY]
     assert _recognize(client)["faces"][0]["expression"]["dominant"] == "Happiness"
+
+
+def test_timeline_query_validation(client):
+    assert client.get("/api/expression/timeline?seconds=1").status_code == 422
+    assert client.get("/api/expression/timeline?seconds=3601").status_code == 422
+    assert client.get("/api/expression/timeline?identity_id=" + "x" * 81).status_code == 422
+    assert client.get("/api/expression/timeline").json() == {"seconds": 600, "samples": [], "moods": [], "actions": []}
+    assert client.get("/api/expression/timeline?seconds=10&identity_id=abc").json()["seconds"] == 10
+
+
+def test_expression_dynamics_failure_never_breaks_recognition(client, fake_engine, fake_expression, face, caplog):
+    """Actions/history are hints: a failure there is warned once (then debug) and recognize still answers."""
+    import logging
+
+    class BrokenActions:
+        def observe(self, *args, **kwargs):
+            raise RuntimeError("clock went backwards")
+
+        def reset(self) -> None:
+            pass
+
+    fake_engine.faces = [face]
+    fake_expression.expressions = [HAPPY]
+    client.post("/api/expression", json={"enabled": True})
+    client.app.state.actions = BrokenActions()
+    with caplog.at_level(logging.DEBUG, logger="face2ai_app.api.routes"):
+        for _ in range(2):
+            payload = _recognize(client)
+            assert payload["state"] == "UNKNOWN" and payload["faces"][0]["expression"]["dominant"] == "Happiness"
+    lines = [r for r in caplog.records if "expression dynamics failed" in r.getMessage()]
+    assert [r.levelno for r in lines] == [logging.WARNING, logging.DEBUG]
+    assert "clock went backwards" in lines[0].getMessage()
+    # the presence still carries the live affect and the sample was recorded before the failure
+    assert client.get("/api/presence").json()["valence"] == pytest.approx(0.45)
+    assert len(client.get("/api/expression/timeline").json()["samples"]) == 2

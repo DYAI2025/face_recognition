@@ -16,10 +16,12 @@ from face2ai_app.adapters.mediapipe_expression import MediaPipeExpressionEngine
 from face2ai_app.api.routes import router
 from face2ai_app.config import Settings
 from face2ai_app.domain.errors import IdentityStoreCorrupted
+from face2ai_app.services.actions import ActionTracker
 from face2ai_app.services.events import IdentityEventBroker
 from face2ai_app.services.identity_service import IdentityService
 from face2ai_app.services.mood import MoodTracker
 from face2ai_app.services.presence import PresenceTracker
+from face2ai_app.services.timeline import AffectHistory
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -82,6 +84,14 @@ def create_app(*, settings: Settings | None = None, engine=None, store=None, exp
     )
     # Mood decorates the presence (a hint, never a fact); fed only while expression is enabled.
     app.state.mood = MoodTracker(stable_ticks=app_settings.mood_stable_ticks, min_score=app_settings.mood_min_score)
+    # Stage 2 (ADR-004): facial action dynamics + a bounded in-memory affect history. Hints, never
+    # facts, never gates; nothing persisted — cleared on presence reset and gone with the process.
+    app.state.actions = ActionTracker(
+        on_threshold=app_settings.action_on_threshold,
+        off_threshold=app_settings.action_off_threshold,
+        min_frames=app_settings.action_min_frames,
+    )
+    app.state.history = AffectHistory(max_seconds=app_settings.timeline_seconds)
     app.state.events = IdentityEventBroker(buffer_size=app_settings.events_buffer_size)
 
     @app.exception_handler(IdentityStoreCorrupted)

@@ -378,3 +378,76 @@ def test_stale_presence_expires_to_no_signal_and_is_published(tmp_path: Path, fa
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+# ------------------------------------------------------------- actions + timeline (Stage 2)
+
+
+def smiling(v: float) -> Expression:
+    """HAPPY plus a smile blendshape group at intensity ``v`` (0.0 = readable, all-zero, ends the smile)."""
+    return Expression(
+        dominant="Happiness", scores={"Happiness": 0.9}, valence=0.6, arousal=0.1,
+        blendshapes={"mouthSmileLeft": v, "mouthSmileRight": v},
+    )
+
+
+def test_action_events_and_timeline(live, fake_engine, fake_expression, face):
+    fake_engine.faces = [face]
+    fake_expression.script = [[smiling(0.9)], [smiling(0.9)], [smiling(0.0)]]
+    _enable_expression(live, fake_expression, [])
+    _recognize(live, times=3)  # seq 1 presence, seq 2 mood ->Happiness (frame 2), seq 3 action smile (offset on frame 3)
+    frames = live.sse("/api/events?after=0", wanted=4, skip_heartbeats=True)
+    assert [f["event"] for f in frames] == ["hello", "presence", "mood", "action"]
+    action = frames[3]["data"]
+    assert action["action"] == "smile" and action["frames"] == 2 and action["peak"] == 0.9
+    assert action["onset_at"] <= action["apex_at"] <= action["offset_at"] == action["at"]
+    assert action["duration_ms"] >= 0
+    assert set(action) == {
+        "sequence", "at", "identity_id", "display_name", "action", "onset_at", "apex_at", "offset_at", "peak", "duration_ms", "frames",
+    }
+    text = json.dumps(action)  # ADR-002 §2 sweep over an action frame: label, timestamps, one peak — never per-frame data
+    for forbidden in ("encoding", "box", "match_distance", "top", "left", "scores", "blendshapes", "dominant"):
+        assert forbidden not in text, forbidden
+    tl = live.client.get("/api/expression/timeline?seconds=60").json()
+    assert len(tl["samples"]) == 3 and tl["samples"][-1]["mood"] == "Happiness"
+    assert len(tl["moods"]) == 1 and tl["moods"][0]["to_mood"] == "Happiness"
+    assert len(tl["actions"]) == 1 and tl["actions"][0]["action"] == "smile"
+    assert tl["seconds"] == 60
+    presence = live.client.get("/api/presence").json()
+    assert presence["mood"] == "Happiness" and presence["valence"] == pytest.approx(0.525)  # live EMA after 3 frames of 0.6
+    assert presence["arousal"] == pytest.approx(0.088)  # 0.05, 0.075, 0.0875 -> rounded to 3
+
+
+def test_presence_valence_is_live_even_without_mood(live, fake_engine, fake_expression, face):
+    fake_engine.faces = [face]
+    weak = Expression(dominant="Neutral", scores={"Neutral": 0.4, "Happiness": 0.3}, valence=0.2, arousal=0.0)
+    _enable_expression(live, fake_expression, [weak])
+    _recognize(live)
+    p = live.client.get("/api/presence").json()
+    assert p["mood"] is None and p["valence"] == pytest.approx(0.1) and p["arousal"] == pytest.approx(0.0)
+    tl = live.client.get("/api/expression/timeline").json()
+    assert len(tl["samples"]) == 1 and tl["samples"][0]["mood"] is None and tl["samples"][0]["valence"] == pytest.approx(0.1)
+
+
+def test_presence_reset_clears_the_timeline_and_active_actions(live, fake_engine, fake_expression, face):
+    fake_engine.faces = [face]
+    _enable_expression(live, fake_expression, [smiling(0.9)])
+    _recognize(live)  # smile active (onset), one sample recorded
+    assert len(live.client.get("/api/expression/timeline").json()["samples"]) == 1
+    live.client.post("/api/presence/reset")
+    assert live.client.get("/api/expression/timeline").json() == {"seconds": 600, "samples": [], "moods": [], "actions": []}
+    fake_expression.expressions = [smiling(0.0)]
+    _recognize(live)
+    assert live.client.get("/api/expression/timeline").json()["actions"] == []  # the smile's offset is unknown -> no event
+
+
+def test_toggle_off_drops_active_actions(live, fake_engine, fake_expression, face):
+    fake_engine.faces = [face]
+    _enable_expression(live, fake_expression, [smiling(0.9)])
+    _recognize(live)  # seq 1 presence; smile active
+    assert live.client.post("/api/expression", json={"enabled": False}).json()["enabled"] is False
+    fake_expression.expressions = [smiling(0.0)]
+    _recognize(live)  # expression off: engine not consulted, no action can complete
+    frames = live.sse("/api/events?after=0", wanted=3)  # heartbeats included: proves nothing else was buffered
+    assert [f["event"] for f in frames] == ["hello", "presence", "heartbeat"]
+    assert live.client.get("/api/expression/timeline").json()["actions"] == []

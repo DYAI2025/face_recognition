@@ -23,13 +23,18 @@ class FakeEngine:
 
 
 class FakeExpressionEngine:
-    """Available expression engine returning scripted expressions (padded/truncated to the box count)."""
+    """Available expression engine returning scripted expressions (padded/truncated to the box count).
+
+    ``script`` holds per-call results consumed first-in-first-out (frame 1, frame 2, ...); once it is
+    exhausted (or when empty) every call answers with ``expressions``.
+    """
 
     available = True
     availability_reason = None
 
     def __init__(self) -> None:
         self.expressions: list[Expression | None] = []
+        self.script: list[list[Expression | None]] = []
         self.raise_error = False
         self.calls = 0
 
@@ -37,7 +42,7 @@ class FakeExpressionEngine:
         self.calls += 1
         if self.raise_error:
             raise RuntimeError("fake expression failure")
-        scripted = list(self.expressions[: len(boxes)])
+        scripted = list((self.script.pop(0) if self.script else self.expressions)[: len(boxes)])
         return scripted + [None] * (len(boxes) - len(scripted))
 
 

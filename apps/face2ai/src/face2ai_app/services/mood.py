@@ -46,7 +46,7 @@ class MoodTracker:
         self._presence_key: str | None = None
         self._identity_id: str | None = None
         self._display_name: str | None = None
-        # Committed mood (what Presence carries); valence/arousal frozen at commit time.
+        # Committed mood; valence/arousal frozen at commit time (the mood event's values).
         self._mood: str | None = None
         self._valence: float | None = None
         self._arousal: float | None = None
@@ -150,10 +150,8 @@ class MoodTracker:
         return transition
 
     def current(self) -> tuple[str | None, float | None, float | None]:
-        """``(mood, valence, arousal)`` as committed — what ``Presence`` should carry.
-
-        Valence/arousal are the values frozen when the mood was committed, not the live EMA.
-        """
+        """``(mood, valence, arousal)`` as committed — the mood label ``Presence`` carries and the values
+        frozen on the ``mood`` event; ``Presence.valence/arousal`` come from ``affect()`` (Stage 2)."""
         with self._lock:
             return self._mood, self._valence, self._arousal
 

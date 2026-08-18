@@ -192,6 +192,7 @@ def test_affect_is_live_while_current_is_frozen():
     assert t.current()[1] == tr.valence  # frozen at commit
     # live EMA (alpha 0.5, zero start) over valence 0.6, 0.6, -0.2 -> 0.3, 0.45, 0.125 and
     # arousal 0.1, 0.1, 0.1 -> 0.05, 0.075, 0.0875; affect() rounds to 3 decimals
+    # (float accumulation gives 0.08750000000000001, so round-to-3 is 0.088)
     assert t.affect() == (pytest.approx(0.125), pytest.approx(0.088))
     assert t.affect() != (None, None)
     t.reset()

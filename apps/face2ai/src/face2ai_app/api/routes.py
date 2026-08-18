@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from face2ai_app import __version__
 from face2ai_app.domain.errors import EnrollmentRejected, InvalidFrame, RecognitionUnavailable
 from face2ai_app.domain.models import (
+    AffectSample,
     Expression,
     IdentitySummary,
     Presence,
@@ -23,10 +25,15 @@ from face2ai_app.domain.models import (
     StoreEvent,
     StoreEventKind,
     SystemStatus,
+    TimelineSnapshot,
 )
+from face2ai_app.services.actions import ActionTracker
 from face2ai_app.services.events import IdentityEvent, IdentityEventBroker
 from face2ai_app.services.mood import MoodTracker
 from face2ai_app.services.presence import PresenceTracker
+from face2ai_app.services.timeline import AffectHistory
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -52,6 +59,14 @@ def _mood(request: Request) -> MoodTracker:
 
 def _events(request: Request) -> IdentityEventBroker:
     return request.app.state.events
+
+
+def _actions(request: Request) -> ActionTracker:
+    return request.app.state.actions
+
+
+def _history(request: Request) -> AffectHistory:
+    return request.app.state.history
 
 
 async def _image_body(request: Request) -> bytes:
@@ -88,13 +103,15 @@ def _publish_presence_transition(request: Request, transition: PresenceTransitio
     it belonged to a presence that is gone, and no further frame will announce its end. If a mood
     was set, its ``mood -> None`` end is published right after the presence event, so the wire is
     symmetric with a frame-driven end. (The presence itself starts fresh, without mood, on every
-    committed transition, so nothing has to be cleared on the tracker.)
+    committed transition, so nothing has to be cleared on the tracker.) Active facial actions are
+    dropped the same way — their offset is unknown, so no ``action`` event is guessed.
     """
     if transition is None:
         return
     mood_ended = None
     if PresenceState.NO_SIGNAL in (transition.from_state, transition.to_state):
         mood_ended = _mood(request).reset(transition.at)
+        _actions(request).reset()
     _events(request).publish("presence", transition)
     if mood_ended is not None:
         _events(request).publish("mood", mood_ended)
@@ -107,23 +124,44 @@ def _primary_expression(presence: Presence, event: RecognitionEvent) -> Expressi
     return None
 
 
-def _observe_mood(request: Request, event: RecognitionEvent, now: datetime) -> None:
-    """Feed one frame to the mood tracker under the stable presence's key; on a mood change decorate
-    the presence and publish an SSE ``mood`` event. Frames without a usable expression (expression
-    off, several faces, no face) count as missing and eventually end the mood."""
+def _observe_expression(request: Request, event: RecognitionEvent, now: datetime) -> None:
+    """One frame -> mood (hysteresis label), live affect on the presence, action events, history samples.
+
+    Everything runs under the stable presence's key. Frames without a usable expression (expression
+    off, several faces, no face) count as missing for the mood, drop active actions and add no sample.
+    The presence carries the *live* smoothed valence/arousal (Stage 2); the ``mood`` event keeps the
+    values frozen at commit. Actions and history are hints only — a failure there must never break
+    ``/api/recognize`` (warned once, then debug).
+    """
     tracker = _presence(request)
     presence = tracker.snapshot(now)
-    transition = _mood(request).observe(
-        f"{presence.state}:{presence.identity_id or ''}",
-        _primary_expression(presence, event),
-        now,
-        identity_id=presence.identity_id,
-        display_name=presence.display_name,
-    )
-    if transition is None:
-        return
-    tracker.set_mood(transition.to_mood, transition.valence, transition.arousal)
-    _events(request).publish("mood", transition)
+    key = f"{presence.state}:{presence.identity_id or ''}"
+    who = {"identity_id": presence.identity_id, "display_name": presence.display_name}
+    expression = _primary_expression(presence, event)
+    mood, history, events = _mood(request), _history(request), _events(request)
+
+    transition = mood.observe(key, expression, now, **who)
+    if transition is not None:
+        events.publish("mood", transition)
+        history.record_mood(transition)
+    current_mood, _, _ = mood.current()
+    valence, arousal = mood.affect()
+    tracker.set_mood(current_mood, valence, arousal)  # Stage 2: presence carries the live affect
+    try:
+        if expression is not None and (valence is not None or arousal is not None):
+            history.record_sample(AffectSample(at=now, mood=current_mood, valence=valence, arousal=arousal, **who))
+        for action in _actions(request).observe(key, expression, now, **who):
+            events.publish("action", action)
+            history.record_action(action)
+    except Exception as exc:  # hints must never take recognition down (e.g. a model validation error)
+        state = request.app.state
+        logger.log(
+            logging.DEBUG if getattr(state, "expression_dynamics_warned", False) else logging.WARNING,
+            "expression dynamics failed, recognition continues without them: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        state.expression_dynamics_warned = True
 
 
 @router.get("/healthz")
@@ -177,6 +215,7 @@ async def set_expression(request: Request, body: ExpressionToggle) -> dict[str, 
         # No further frame will carry an expression, so the current mood ends now rather than after
         # stable_ticks missing frames. Presence itself is unchanged, so its mood fields must be cleared.
         mood_ended = _mood(request).reset()
+        _actions(request).reset()  # active actions are dropped, not completed: their offset is unknown
         if mood_ended is not None:
             _presence(request).set_mood(None, None, None)
             _events(request).publish("mood", mood_ended)
@@ -196,7 +235,7 @@ async def recognize(request: Request, response: Response) -> RecognitionEvent:
     now = datetime.now(timezone.utc)
     _publish_presence_transition(request, _presence(request).observe(event, now))
     # no await between these two: set_mood must land on the presence just observed
-    _observe_mood(request, event, now)
+    _observe_expression(request, event, now)
     response.headers[AGENT_HEADER] = "1" if _events(request).connected(EVENT_ROLE_AGENT) else "0"
     return event
 
@@ -260,11 +299,27 @@ async def presence(request: Request) -> Presence:
 @router.post("/api/presence/reset", response_model=Presence)
 async def reset_presence(request: Request) -> Presence:
     """Browser stopped/paused the camera or the page is going away: presence returns to NO_SIGNAL
-    and the mood is forgotten. Publishes the presence transition and, if a mood was set, its end;
-    when presence already was NO_SIGNAL nothing changes and nothing is published (there was no mood
-    to forget: crossing NO_SIGNAL already reset the mood tracker)."""
+    and everything derived from it is forgotten — the mood, active facial actions and the whole
+    in-memory affect history (``/api/expression/timeline`` is empty afterwards). Publishes the
+    presence transition and, if a mood was set, its end; when presence already was NO_SIGNAL the
+    presence and mood are unchanged and nothing is published (crossing NO_SIGNAL already reset the
+    mood tracker), but the history is still cleared."""
     _publish_presence_transition(request, _presence(request).reset())
+    _actions(request).reset()
+    _history(request).clear()
     return _presence(request).snapshot()
+
+
+@router.get("/api/expression/timeline", response_model=TimelineSnapshot)
+def expression_timeline(
+    request: Request,
+    seconds: int = Query(default=600, ge=10, le=3600),
+    identity_id: str | None = Query(default=None, max_length=80),
+) -> TimelineSnapshot:
+    """In-memory affect history (live valence/arousal samples, mood changes, completed facial actions)
+    of the last ``seconds`` — bounded, never persisted, cleared on ``POST /api/presence/reset`` and
+    restart. Hints, never facts. ``identity_id`` narrows it to one known person."""
+    return _history(request).snapshot(seconds=seconds, identity_id=identity_id)
 
 
 def _sse(event: str, data: dict[str, Any], event_id: int | None = None) -> str:
@@ -287,7 +342,10 @@ async def events(
     after: int | None = Query(default=None, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
-    """Server-Sent Events: `hello`, then `presence` / `mood` / `store` events, `heartbeat` while idle.
+    """Server-Sent Events: `hello`, then `presence` / `mood` / `action` / `store` events, `heartbeat` while idle.
+
+    `action` is a completed facial action (onset/apex/offset timestamps, peak, duration_ms, frames) —
+    expression dynamics at frame-rate resolution; a hint, never a fact, and nothing may gate on it.
 
     Consumers such as the voice agent subscribe with ``?role=agent``; the browser then knows an
     agent is present (``/api/status.agent_connected``) and leaves greetings to it. Reconnects may

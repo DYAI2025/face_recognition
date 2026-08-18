@@ -39,6 +39,10 @@ class Settings:
     expression_models_dir: Path = Path.home() / ".face2ai" / "models"  # == default data_dir / "models"
     mood_stable_ticks: int = 3
     mood_min_score: float = 0.5
+    action_on_threshold: float = 0.35  # blendshape group mean that starts a facial action
+    action_off_threshold: float = 0.2  # ... and ends it (hysteresis; == compact_blendshapes floor)
+    action_min_frames: int = 2  # frames an action must persist before it is reported
+    timeline_seconds: int = 600  # in-memory affect history window (never persisted)
 
     def __post_init__(self) -> None:
         if self.presence_stale_seconds <= 0:
@@ -53,6 +57,12 @@ class Settings:
             raise ValueError("FACE2AI_MOOD_STABLE_TICKS must be >= 1")
         if not 0 < self.mood_min_score <= 1:
             raise ValueError("FACE2AI_MOOD_MIN_SCORE must be in (0, 1]")
+        if not 0 < self.action_off_threshold < self.action_on_threshold <= 1:
+            raise ValueError("FACE2AI_ACTION_OFF_THRESHOLD must be > 0 and < FACE2AI_ACTION_ON_THRESHOLD <= 1")
+        if self.action_min_frames < 1:
+            raise ValueError("FACE2AI_ACTION_MIN_FRAMES must be >= 1")
+        if self.timeline_seconds < 10:
+            raise ValueError("FACE2AI_TIMELINE_SECONDS must be >= 10")
 
     @property
     def identity_store_path(self) -> Path:
@@ -78,4 +88,8 @@ class Settings:
             ).expanduser(),
             mood_stable_ticks=int(os.getenv("FACE2AI_MOOD_STABLE_TICKS", "3")),
             mood_min_score=float(os.getenv("FACE2AI_MOOD_MIN_SCORE", "0.5")),
+            action_on_threshold=float(os.getenv("FACE2AI_ACTION_ON_THRESHOLD", "0.35")),
+            action_off_threshold=float(os.getenv("FACE2AI_ACTION_OFF_THRESHOLD", "0.2")),
+            action_min_frames=int(os.getenv("FACE2AI_ACTION_MIN_FRAMES", "2")),
+            timeline_seconds=int(os.getenv("FACE2AI_TIMELINE_SECONDS", "600")),
         )

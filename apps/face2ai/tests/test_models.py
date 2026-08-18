@@ -1,7 +1,20 @@
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
-from face2ai_app.domain.models import EMOTIONS, Expression, FaceBox, FaceObservation, Presence, PresenceTransition
+from face2ai_app.domain.models import (
+    ACTIONS,
+    EMOTIONS,
+    ActionEvent,
+    AffectSample,
+    Expression,
+    FaceBox,
+    FaceObservation,
+    Presence,
+    PresenceTransition,
+    TimelineSnapshot,
+)
 
 
 def test_expression_shape_and_bounds():
@@ -34,3 +47,21 @@ def test_scores_and_presence_valence_are_bounded():
         Presence(state="KNOWN", valence=42.0)
     with pytest.raises(ValidationError):
         Presence(state="KNOWN", arousal=-1.5)
+
+
+def test_action_event_is_wire_safe_and_validated():
+    t = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    e = ActionEvent(at=t, action="smile", onset_at=t, apex_at=t, offset_at=t, peak=0.9, duration_ms=900, frames=2)
+    assert set(e.model_dump()) == {"at", "identity_id", "display_name", "action", "onset_at", "apex_at", "offset_at",
+                                   "peak", "duration_ms", "frames"}
+    with pytest.raises(ValidationError):
+        ActionEvent(at=t, action="wink", onset_at=t, apex_at=t, offset_at=t, peak=0.9, duration_ms=1, frames=1)
+    with pytest.raises(ValidationError):
+        ActionEvent(at=t, action="smile", onset_at=t, apex_at=t, offset_at=t, peak=1.5, duration_ms=1, frames=1)
+    # wire-contract pin: these labels reach the browser, the voice agent and the Hermes plugin
+    assert ACTIONS == ("smile", "frown", "brow_raise", "brow_furrow", "eye_squint", "eyes_wide", "nose_wrinkle", "lip_press")
+
+
+def test_timeline_snapshot_shape():
+    snap = TimelineSnapshot(seconds=60, samples=[AffectSample(at=datetime.now(timezone.utc), valence=0.2)], moods=[], actions=[])
+    assert snap.model_dump()["samples"][0]["mood"] is None

@@ -132,7 +132,11 @@ class PresenceState(StrEnum):
 
 
 class Presence(BaseModel):
-    """Wire contract for agents / Party Mirror: states, names, counts, timestamps — nothing biometric."""
+    """Wire contract for agents / Party Mirror: states, names, counts, timestamps — nothing biometric.
+
+    ``valence``/``arousal`` are the *live* smoothed affect (Stage 2) — may be present without a
+    ``mood``; ``mood`` keeps its hysteresis.
+    """
 
     state: PresenceState = PresenceState.NO_SIGNAL
     identity_id: str | None = None
@@ -175,6 +179,56 @@ class MoodTransition(BaseModel):
     to_mood: str | None
     valence: float | None = Field(default=None, ge=-1.0, le=1.0)
     arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
+
+
+ACTIONS = ("smile", "frown", "brow_raise", "brow_furrow", "eye_squint", "eyes_wide", "nose_wrinkle", "lip_press")
+
+
+class ActionEvent(BaseModel):
+    """One completed facial action (SSE ``action``): onset → apex → offset from blendshape intensities.
+
+    Timing is quantized to the frame rate (~0.6 s at the browser's loop), so these are expression
+    *dynamics*, not micro-expressions; a hint, never a fact. Wire-safe: label, names, timestamps,
+    one peak intensity — no per-frame series, no landmarks.
+    """
+
+    at: datetime  # == offset_at: when the action became known
+    identity_id: str | None = None
+    display_name: str | None = None
+    action: str
+    onset_at: datetime
+    apex_at: datetime
+    offset_at: datetime
+    peak: UnitScore
+    duration_ms: int = Field(ge=0)
+    frames: int = Field(ge=1)
+
+    @field_validator("action")
+    @classmethod
+    def _known_action(cls, value: str) -> str:
+        if value not in ACTIONS:
+            raise ValueError(f"unknown action: {value}")
+        return value
+
+
+class AffectSample(BaseModel):
+    """One point of the in-memory affect history: live smoothed valence/arousal + the mood at that time."""
+
+    at: datetime
+    identity_id: str | None = None
+    display_name: str | None = None
+    mood: str | None = None
+    valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+    arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
+
+
+class TimelineSnapshot(BaseModel):
+    """``GET /api/expression/timeline``: bounded, in-memory, never persisted; cleared on presence reset."""
+
+    seconds: int
+    samples: list[AffectSample] = Field(default_factory=list)
+    moods: list[MoodTransition] = Field(default_factory=list)
+    actions: list[ActionEvent] = Field(default_factory=list)
 
 
 class StoreEventKind(StrEnum):

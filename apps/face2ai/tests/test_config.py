@@ -9,6 +9,10 @@ _EXPRESSION_ENV = (
     "FACE2AI_EXPRESSION_MODELS_DIR",
     "FACE2AI_MOOD_STABLE_TICKS",
     "FACE2AI_MOOD_MIN_SCORE",
+    "FACE2AI_ACTION_ON_THRESHOLD",
+    "FACE2AI_ACTION_OFF_THRESHOLD",
+    "FACE2AI_ACTION_MIN_FRAMES",
+    "FACE2AI_TIMELINE_SECONDS",
     "FACE2AI_DATA_DIR",
 )
 
@@ -73,3 +77,25 @@ def test_mood_validators_reject_out_of_range():
     with pytest.raises(ValueError, match="FACE2AI_MOOD_MIN_SCORE"):
         Settings(mood_min_score=1.5)
     assert Settings(mood_min_score=1.0).mood_min_score == 1.0
+
+
+def test_action_and_timeline_settings(monkeypatch):
+    _clear_env(monkeypatch)
+    s = Settings.from_env()
+    assert (s.action_on_threshold, s.action_off_threshold, s.action_min_frames, s.timeline_seconds) == (0.35, 0.2, 2, 600)
+    monkeypatch.setenv("FACE2AI_ACTION_ON_THRESHOLD", "0.5")
+    monkeypatch.setenv("FACE2AI_ACTION_MIN_FRAMES", "1")
+    monkeypatch.setenv("FACE2AI_TIMELINE_SECONDS", "120")
+    s = Settings.from_env()
+    assert (s.action_on_threshold, s.action_min_frames, s.timeline_seconds) == (0.5, 1, 120)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"action_on_threshold": 0.2, "action_off_threshold": 0.3},  # off must be < on
+    {"action_on_threshold": 1.5},
+    {"action_min_frames": 0},
+    {"timeline_seconds": 5},
+])
+def test_action_settings_are_validated(kwargs):
+    with pytest.raises(ValueError):
+        Settings(**kwargs)

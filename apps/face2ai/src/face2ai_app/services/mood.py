@@ -26,10 +26,9 @@ class MoodTracker:
     ``mood -> None`` transition, and only if a mood was set. Frames without an expression (``None``
     or empty ``scores``) never touch the EMA or the streak; they only count towards that reset.
 
-    Valence/arousal are smoothed alongside but *frozen at commit time*: ``current()`` and the
-    transition carry the values as of the moment the mood was committed, not the live EMA. This
-    is deliberate — it keeps the wire quiet (one change per mood, not per frame); Stage 2 may add
-    live affect as its own signal.
+    Valence/arousal are smoothed alongside: ``current()`` and the transition carry them *frozen at
+    commit time* for the mood event (one change per mood, not per frame); ``affect()`` returns the
+    live EMA for ``Presence`` (Stage 2).
     """
 
     def __init__(self, stable_ticks: int = 3, min_score: float = 0.5, alpha: float = 0.5) -> None:
@@ -157,6 +156,14 @@ class MoodTracker:
         """
         with self._lock:
             return self._mood, self._valence, self._arousal
+
+    def affect(self) -> tuple[float | None, float | None]:
+        """Live smoothed ``(valence, arousal)`` (rounded to 3), None until the first readable frame — what
+        ``Presence`` carries since Stage 2. ``current()`` keeps the commit-frozen values for the mood event."""
+        with self._lock:
+            v = None if self._ema_valence is None else round(self._ema_valence, 3)
+            a = None if self._ema_arousal is None else round(self._ema_arousal, 3)
+            return v, a
 
     def reset(self, now: datetime | None = None) -> MoodTransition | None:
         """Forget everything (camera stopped, presence expired or reset).

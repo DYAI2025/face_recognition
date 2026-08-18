@@ -181,3 +181,18 @@ def test_transition_is_a_wire_model_without_biometrics():
 def test_constructor_validation(kwargs):
     with pytest.raises(ValueError):
         MoodTracker(**kwargs)
+
+
+def test_affect_is_live_while_current_is_frozen():
+    t = MoodTracker(stable_ticks=2, min_score=0.5)
+    for _ in range(2):
+        tr = t.observe("KNOWN:a", happy(0.6), T0)
+    assert tr is not None and t.current()[1] == tr.valence
+    t.observe("KNOWN:a", happy(-0.2), T0)  # same mood, valence swings
+    assert t.current()[1] == tr.valence  # frozen at commit
+    # live EMA (alpha 0.5, zero start) over valence 0.6, 0.6, -0.2 -> 0.3, 0.45, 0.125 and
+    # arousal 0.1, 0.1, 0.1 -> 0.05, 0.075, 0.0875; affect() rounds to 3 decimals
+    assert t.affect() == (pytest.approx(0.125), pytest.approx(0.088))
+    assert t.affect() != (None, None)
+    t.reset()
+    assert t.affect() == (None, None)

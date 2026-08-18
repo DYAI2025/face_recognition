@@ -111,3 +111,39 @@ def test_closed_dialogs_are_not_laid_out():
             continue
         if "display" in body:
             assert "[open]" in selector, f"{selector!r} sets display without [open]"
+
+
+# ---------- expression (Stage 1): opt-in, hedged, never a certainty ----------
+
+
+def test_expression_toggle_and_tile_are_present_and_off_by_default():
+    html = INDEX.read_text(encoding="utf-8")
+    button = re.search(r"<button[^>]*id=\"expressionButton\"[^>]*>", html)
+    assert button, "expression toggle button missing"
+    assert "disabled" in button.group(0), "toggle must start disabled until /api/status says the engine is available"
+    assert re.search(r"id=\"expressionTile\"", html), "expression metric tile missing"
+    assert re.search(r"id=\"expressionValue\"[^>]*>aus<", html), "tile must start as 'aus' (opt-in default off)"
+    for bar in ("valenceFill", "arousalFill"):
+        assert re.search(rf"class=\"mood-bar-fill\" id=\"{bar}\"", html), bar
+    assert "Ausdruck: aus" in html
+
+
+def test_expression_wording_is_hedged_and_never_a_certainty(client):
+    """The served bundle speaks of how a face *appears* ("wirkt …"); nothing reads as a finding."""
+    model_js = client.get("/assets/js/model.js").text
+    assert "wirkt " in model_js
+    assert "looks " in model_js
+    assert "ist fröhlich" not in model_js
+    for path in [INDEX, STATIC / "css" / "app.css", *_js_files()]:
+        text = path.read_text(encoding="utf-8").lower()
+        assert "erkannt" not in text, f"{path.name}: expression must never be presented as 'erkannt'"
+        assert not re.search(r"\bist (fröhlich|traurig|verärgert|ängstlich|überrascht|angewidert|abschätzig|neutral)\b", text), path.name
+
+
+def test_expression_toggle_is_the_only_thing_the_browser_sends_for_the_feature():
+    api_js = (JS_DIR / "api.js").read_text(encoding="utf-8")
+    assert re.search(r"'/api/expression'", api_js)
+    assert re.search(r"JSON\.stringify\(\{ enabled: enabled === true \}\)", api_js), "toggle body must be exactly {enabled: bool}"
+    app_js = (JS_DIR / "app.js").read_text(encoding="utf-8")
+    assert "api.setExpression(" in app_js
+    assert "expression_available" in app_js and "expression_reason" in app_js and "expression_enabled" in app_js

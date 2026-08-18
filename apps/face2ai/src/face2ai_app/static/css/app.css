@@ -168,6 +168,20 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outl
 .metric-label { font-size: 8px; color: var(--muted); letter-spacing: .12em; text-transform: uppercase; }
 .metric-value { margin-top: 7px; font-size: 13px; font-variant-numeric: tabular-nums; color: #dfe9e8; }
 .metric-value.muted { color: var(--muted-2); }
+.metric-value.ok { color: var(--mint); }
+.metric-value.warn { color: var(--warning); }
+
+/* Expression tile (opt-in mood hint): hedged label + two small valence/arousal bars, -1..1 → 0..100 %.
+   The centre tick marks 0; the fill is neutral light, never a state colour — it is a reading, not a verdict. */
+.metric-wide { grid-column: 1 / -1; }
+.metric-note { margin-left: 6px; color: var(--muted-2); letter-spacing: .08em; text-transform: none; }
+.mood-bars { display: grid; gap: 6px; margin-top: 9px; }
+.mood-bars[hidden] { display: none; }
+.mood-bar { display: grid; grid-template-columns: 54px 1fr 40px; align-items: center; gap: 8px; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.mood-bar-track { position: relative; height: 4px; border-radius: 999px; background: rgba(190, 219, 234, .1); overflow: hidden; }
+.mood-bar-track::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(190, 219, 234, .34); }
+.mood-bar-fill { display: block; height: 100%; width: 0; border-radius: inherit; background: rgba(223, 233, 232, .72); transition: width .3s ease; }
+.mood-bar-num { text-align: right; font-variant-numeric: tabular-nums; color: #d9e5e4; letter-spacing: 0; text-transform: none; }
 
 .context-card { margin-right: 18px; }
 .context-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid rgba(190, 219, 234, .08); font-size: 11px; }
@@ -177,6 +191,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outl
 
 .action-card { margin-left: 14px; padding: 14px; }
 .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.action-wide { grid-column: 1 / -1; }
 
 /* Event stream: secondary evidence layer, real events only. */
 .events { grid-column: 1 / -1; margin-top: 2px; display: grid; grid-template-columns: minmax(220px, .42fr) 1fr; gap: 18px; align-items: stretch; }

@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  axisPercent,
   describeCameraError,
   describeEvent,
+  describeExpression,
   offlineView,
   projectBox,
   shouldGreet,
+  trackMood,
   transitionKey,
 } from '../../src/face2ai_app/static/js/model.js';
 
@@ -131,4 +134,99 @@ test('describeCameraError only calls permission problems "blocked"', () => {
   assert.equal(describeCameraError({ name: 'NotReadableError' }).pill, 'CAMERA UNAVAILABLE');
   assert.match(describeCameraError({ name: 'NotFoundError' }).context, /NotFoundError/);
   assert.equal(describeCameraError(undefined).pill, 'CAMERA UNAVAILABLE');
+});
+
+// ---------- expression (Stage 1): a hint, never a fact ----------
+
+test('describeExpression speaks in hedged German and never claims certainty', () => {
+  const d = describeExpression({ dominant: 'Happiness', scores: { Happiness: 0.9 }, valence: 0.6, arousal: 0.1 }, 'de');
+  assert.equal(d.label, 'wirkt fröhlich');
+  assert.equal(d.tone, 'ok');
+  assert.equal(describeExpression(null, 'de'), null);
+  assert.equal(describeExpression({ dominant: 'Neutral', scores: {} }, 'en').label, 'looks neutral');
+});
+
+test('describeExpression maps every emotion label to hedged wording in both languages', () => {
+  const de = { Happiness: 'wirkt fröhlich', Sadness: 'wirkt traurig', Anger: 'wirkt verärgert', Fear: 'wirkt ängstlich', Surprise: 'wirkt überrascht', Disgust: 'wirkt angewidert', Contempt: 'wirkt abschätzig', Neutral: 'wirkt neutral' };
+  const en = { Happiness: 'looks happy', Sadness: 'looks sad', Anger: 'looks angry', Fear: 'looks fearful', Surprise: 'looks surprised', Disgust: 'looks disgusted', Contempt: 'looks contemptuous', Neutral: 'looks neutral' };
+  for (const [dominant, label] of Object.entries(de)) assert.equal(describeExpression({ dominant }, 'de').label, label);
+  for (const [dominant, label] of Object.entries(en)) assert.equal(describeExpression({ dominant }, 'en').label, label);
+  // Every label is hedged; none reads as a finding.
+  for (const lang of ['de', 'en']) {
+    for (const dominant of Object.keys(de)) {
+      const { label } = describeExpression({ dominant }, lang);
+      assert.match(label, /^(wirkt|looks) /);
+      assert.doesNotMatch(label, /\b(ist|is|erkannt|detected|recognized)\b/);
+    }
+  }
+});
+
+test('describeExpression tone: happiness ok, neutral/surprise muted, the rest warn', () => {
+  assert.equal(describeExpression({ dominant: 'Happiness' }).tone, 'ok');
+  assert.equal(describeExpression({ dominant: 'Neutral' }).tone, 'muted');
+  assert.equal(describeExpression({ dominant: 'Surprise' }).tone, 'muted');
+  for (const dominant of ['Sadness', 'Anger', 'Fear', 'Disgust', 'Contempt']) assert.equal(describeExpression({ dominant }).tone, 'warn');
+});
+
+test('describeExpression tolerates unknown labels, unknown languages and missing numbers without throwing', () => {
+  const odd = describeExpression({ dominant: 'Boredom' }, 'de');
+  assert.equal(odd.label, 'wirkt boredom');
+  assert.equal(odd.tone, 'muted');
+  assert.equal(describeExpression({ dominant: 'Happiness' }, 'fr').label, 'wirkt fröhlich'); // falls back to German
+  assert.equal(describeExpression({ dominant: 'Happiness' }).label, 'wirkt fröhlich'); // default language
+  assert.equal(describeExpression({}), null);
+  assert.equal(describeExpression({ dominant: '' }), null);
+  assert.equal(describeExpression({ dominant: 42 }), null);
+  const bare = describeExpression({ dominant: 'Neutral' });
+  assert.equal(bare.valence, null);
+  assert.equal(bare.arousal, null);
+  const full = describeExpression({ dominant: 'Neutral', valence: -0.25, arousal: 'x' });
+  assert.equal(full.valence, -0.25);
+  assert.equal(full.arousal, null);
+});
+
+test('axisPercent maps -1..1 onto 0..100 and clamps', () => {
+  assert.equal(axisPercent(-1), 0);
+  assert.equal(axisPercent(0), 50);
+  assert.equal(axisPercent(1), 100);
+  assert.equal(axisPercent(0.6), 80);
+  assert.equal(axisPercent(2), 100);
+  assert.equal(axisPercent(-3), 0);
+  assert.equal(axisPercent(null), null);
+  assert.equal(axisPercent(undefined), null);
+  assert.equal(axisPercent(NaN), null);
+});
+
+test('trackMood logs a hedged label only once it held for stableTicks frames and only when it changes', () => {
+  let t = trackMood(null, 'wirkt fröhlich', 3);
+  assert.equal(t.log, null); // 1st frame: not yet stable
+  t = trackMood(t, 'wirkt fröhlich', 3);
+  assert.equal(t.log, null);
+  t = trackMood(t, 'wirkt fröhlich', 3);
+  assert.equal(t.log, 'wirkt fröhlich'); // 3rd consecutive frame: log once
+  t = trackMood(t, 'wirkt fröhlich', 3);
+  assert.equal(t.log, null); // same label: no repeat
+  t = trackMood(t, 'wirkt traurig', 3);
+  t = trackMood(t, 'wirkt fröhlich', 3); // flicker resets the streak
+  t = trackMood(t, 'wirkt traurig', 3);
+  t = trackMood(t, 'wirkt traurig', 3);
+  assert.equal(t.log, null);
+  t = trackMood(t, 'wirkt traurig', 3);
+  assert.equal(t.log, 'wirkt traurig');
+});
+
+test('trackMood forgets the logged mood after stableTicks frames without a label so a returning mood logs again', () => {
+  let t = trackMood(null, 'wirkt fröhlich', 2);
+  t = trackMood(t, 'wirkt fröhlich', 2);
+  assert.equal(t.log, 'wirkt fröhlich');
+  t = trackMood(t, null, 2);
+  assert.equal(t.log, null);
+  t = trackMood(t, 'wirkt fröhlich', 2);
+  t = trackMood(t, 'wirkt fröhlich', 2);
+  assert.equal(t.log, null); // one missing frame is flicker, not a mood end
+  t = trackMood(t, null, 2);
+  t = trackMood(t, null, 2); // stableTicks missing frames: mood ended
+  t = trackMood(t, 'wirkt fröhlich', 2);
+  t = trackMood(t, 'wirkt fröhlich', 2);
+  assert.equal(t.log, 'wirkt fröhlich');
 });

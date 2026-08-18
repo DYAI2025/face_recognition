@@ -4,12 +4,14 @@
 import * as api from './api.js';
 import { CameraController } from './camera.js';
 import { decryptText, installAtmosphere, installMagnets, installSpotlights } from './effects.js';
-import { describeCameraError, describeEvent, offlineView, shouldGreet, transitionKey } from './model.js';
+import { axisPercent, describeCameraError, describeEvent, describeExpression, offlineView, shouldGreet, trackMood, transitionKey } from './model.js';
 
 const RECOGNIZE_INTERVAL_MS = 450;
 const RECOGNIZE_ERROR_BACKOFF_MS = 1500;
 const STATUS_INTERVAL_MS = 5000;
 const MAX_EVENTS = 8;
+const MOOD_STABLE_TICKS = 3;   // frames a hedged label must hold before it is logged (matches the server's mood default)
+const EXPRESSION_LANG = 'de';  // wording table in model.js; the tile speaks German ("wirkt …")
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 const els = Object.fromEntries([...document.querySelectorAll('[id]')].map((el) => [el.id, el]));
@@ -35,6 +37,8 @@ const state = {
   enrollBlob: null,     // frame + event frozen when the dialog opened
   enrollEvent: null,
   agentConnected: false, // a voice agent subscribes to /api/events; it then owns the spoken greeting
+  expression: { available: false, reason: null, enabled: false }, // opt-in mood hints (Stage 1), mirrored from /api/status
+  mood: null,            // trackMood state: which hedged label was last logged to the event stream
 };
 
 const IDLE_VIEW = describeEvent({ state: 'NO_FACE' });
@@ -109,6 +113,71 @@ function renderIdentity(view) {
   els.learnButton.disabled = !(view.canEnroll && state.cameraOn && !state.paused && !state.enrolling);
 }
 
+// ---------- expression tile (opt-in mood hint, never a fact) ----------
+
+function setExpressionTile(text, tone, described = null) {
+  els.expressionValue.textContent = text;
+  els.expressionValue.className = `metric-value ${tone}`.trim();
+  const show = described !== null && (described.valence !== null || described.arousal !== null);
+  els.moodBars.hidden = !show;
+  if (!show) return;
+  for (const [axis, fill, num] of [[described.valence, els.valenceFill, els.valenceValue], [described.arousal, els.arousalFill, els.arousalValue]]) {
+    const pct = axisPercent(axis);
+    fill.style.width = pct === null ? '0%' : `${pct}%`;
+    num.textContent = pct === null ? '—' : `${axis > 0 ? '+' : ''}${axis.toFixed(2)}`;
+  }
+}
+
+/** Per recognize result: one face → its hedged expression; several, none, or no expression → nothing to say. */
+function renderExpression(event) {
+  if (!state.expression.enabled) { setExpressionTile('aus', 'muted'); return; }
+  const faces = Array.isArray(event?.faces) ? event.faces : [];
+  const described = faces.length === 1 ? describeExpression(faces[0].expression, EXPRESSION_LANG) : null;
+  if (!described) {
+    setExpressionTile('—', 'muted');
+  } else {
+    setExpressionTile(described.label, described.tone, described);
+  }
+  // Event stream: only stable label changes, kept apart from the presence transitionKey.
+  state.mood = trackMood(state.mood, described?.label ?? null, MOOD_STABLE_TICKS);
+  if (state.mood.log) addEvent('Stimmung', `${faces[0]?.display_name || 'Person'} ${state.mood.log}.`);
+}
+
+/** Nothing being recognized right now (camera off, paused, error): the tile shows no reading and the mood log restarts. */
+function clearExpression() {
+  state.mood = null;
+  setExpressionTile(state.expression.enabled ? '—' : 'aus', 'muted');
+}
+
+/** /api/status → button + tile state (the server is the only source of truth; a click never sets it). */
+function applyExpression(available, reason, enabled) {
+  const wasEnabled = state.expression.enabled;
+  state.expression = { available: available === true, reason: reason || null, enabled: enabled === true };
+  els.expressionButton.disabled = !state.expression.available;
+  els.expressionLabel.textContent = state.expression.enabled ? 'Ausdruck: an' : 'Ausdruck: aus';
+  els.expressionButton.title = state.expression.available
+    ? (state.expression.enabled ? 'Ausdrucks-Hinweise ausschalten' : 'Ausdrucks-Hinweise einschalten — Einschätzungen pro Bild, nichts wird gespeichert')
+    : `Nicht verfügbar · ${state.expression.reason || 'expression engine unavailable'}`;
+  if (state.expression.enabled !== wasEnabled) clearExpression(); // switched either way: the reading restarts
+}
+
+async function toggleExpression() {
+  const enable = !state.expression.enabled;
+  els.expressionButton.disabled = true;
+  try {
+    const result = await api.setExpression(enable);
+    addEvent(result.enabled ? 'Ausdruck an' : 'Ausdruck aus', result.enabled
+      ? 'Ausdrucks-Hinweise werden pro Bild angezeigt („wirkt …“). Nichts davon wird gespeichert.'
+      : 'Keine Ausdrucks-Hinweise mehr; Ergebnisse tragen wieder nur Identität.');
+  } catch (error) {
+    // 409 (engine unavailable) or any other failure: surface the server's detail, claim nothing.
+    toast(`Ausdruck nicht verfügbar: ${error.message}`);
+    addEvent('Ausdruck nicht verfügbar', error.message);
+  } finally {
+    await refreshStatus(); // button label/tile follow /api/status, not the click
+  }
+}
+
 // ---------- engine / status ----------
 
 function applyEngine(available, reason) {
@@ -126,6 +195,7 @@ function applyEngine(available, reason) {
     state.lastEvent = null;
     if (state.cameraOn) renderIdentity(offlineView(reason || 'engine unavailable'));
     els.learnButton.disabled = true;
+    clearExpression();
   }
   setLoopIndicator();
   if (changed) {
@@ -145,12 +215,14 @@ async function refreshStatus() {
     els.cooldownContext.textContent = `${Math.round(state.cooldownMs / 1000)} s`;
     els.identityCount.textContent = String(status.identity_count ?? '—');
     applyAgent(status.agent_connected === true);
+    applyExpression(status.expression_available, status.expression_reason, status.expression_enabled);
     applyEngine(status.engine_available === true, status.engine_reason);
   } catch (error) {
     setPill(els.enginePill, els.engineStatus, 'API OFFLINE', 'error');
     els.engineContext.textContent = `API unreachable · ${error.message}`;
     setRecognitionValue('Offline', true);
     els.learnButton.disabled = true;
+    els.expressionButton.disabled = true;
     if (state.engine.known && state.engine.available) addEvent('API unreachable', error.message);
     state.engine = { known: true, available: false };
     setLoopIndicator();
@@ -208,6 +280,7 @@ function handleRecognition(event) {
   const view = describeEvent(event);
   camera.drawFaces(Array.isArray(event.faces) ? event.faces : []);
   renderIdentity(view);
+  renderExpression(event);
   setRecognitionValue('Live', false);
 
   const key = transitionKey(event);
@@ -229,6 +302,7 @@ function handleRecognition(event) {
 function handleRecognitionError(error) {
   camera.clearOverlay();
   state.lastEvent = null;
+  clearExpression();
   if (error.status === 503) {
     // Engine unavailable: the server said so explicitly; applyEngine renders the offline view.
     applyEngine(false, error.message);
@@ -290,6 +364,7 @@ async function startCamera() {
   state.frame = 0;
   state.lastTransition = null;
   state.lastEvent = null;
+  clearExpression();
   els.stage.classList.add('camera-on');
   els.centerState.inert = true;
   els.visionToggle.title = 'Stop vision';
@@ -332,6 +407,7 @@ function stopCamera() {
   setRecognitionValue(state.engine.available ? 'Ready' : 'Offline', !state.engine.available);
   addEvent('Vision stopped', 'Camera stream closed. No frames are being processed.');
   renderIdentity(offlineView());
+  clearExpression();
   setLoopIndicator();
   api.resetPresence().catch(() => { /* best-effort; the backend marks presence stale and expires it after a few seconds */ });
 }
@@ -346,6 +422,7 @@ function togglePause() {
     api.resetPresence().catch(() => {}); // no frames while paused: subscribers should see NO_SIGNAL now, not after expiry
     els.pauseLabel.textContent = 'Resume vision';
     setRecognitionValue('Paused', true);
+    clearExpression();
     els.learnButton.disabled = true;
     addEvent('Recognition paused', 'Camera preview stays local and visible; recognition requests are stopped.');
   } else {
@@ -528,6 +605,7 @@ els.eraseButton.addEventListener('click', () => els.eraseDialog.showModal());
 els.drawerEraseButton.addEventListener('click', () => els.eraseDialog.showModal());
 els.eraseForm.addEventListener('submit', submitErase);
 els.eraseCancel.addEventListener('click', () => els.eraseDialog.close('cancel'));
+els.expressionButton.addEventListener('click', toggleExpression);
 
 // Visibility hygiene: no recognition work while the tab is hidden; camera stays user-controlled.
 document.addEventListener('visibilitychange', () => {

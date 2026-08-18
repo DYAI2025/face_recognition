@@ -81,6 +81,14 @@
             <div class="metric"><div class="metric-label">Faces visible</div><div class="metric-value" id="facesValue">0</div></div>
             <div class="metric"><div class="metric-label">Recognition</div><div class="metric-value muted" id="recognitionValue">Checking</div></div>
             <div class="metric"><div class="metric-label">Identities stored</div><div class="metric-value" id="identityCount">—</div></div>
+            <div class="metric metric-wide" id="expressionTile">
+              <div class="metric-label">Ausdruck <span class="metric-note">Einschätzung, keine Tatsache</span></div>
+              <div class="metric-value muted" id="expressionValue">aus</div>
+              <div class="mood-bars" id="moodBars" hidden>
+                <div class="mood-bar"><span class="mood-bar-label">Valenz</span><span class="mood-bar-track" aria-hidden="true"><span class="mood-bar-fill" id="valenceFill"></span></span><span class="mood-bar-num" id="valenceValue">—</span></div>
+                <div class="mood-bar"><span class="mood-bar-label">Erregung</span><span class="mood-bar-track" aria-hidden="true"><span class="mood-bar-fill" id="arousalFill"></span></span><span class="mood-bar-num" id="arousalValue">—</span></div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -100,6 +108,7 @@
             <button class="ghost-btn" id="openIdentitiesButton" type="button"><span>Identities</span><span class="btn-icon" aria-hidden="true">↗</span></button>
             <button class="ghost-btn" id="pauseButton" type="button" disabled><span id="pauseLabel">Pause vision</span><span class="btn-icon" aria-hidden="true">Ⅱ</span></button>
             <button class="danger-btn" id="eraseButton" type="button"><span>Erase all</span><span class="btn-icon" aria-hidden="true">×</span></button>
+            <button class="ghost-btn action-wide" id="expressionButton" type="button" disabled title="Ausdrucks-Engine wird geprüft"><span id="expressionLabel">Ausdruck: aus</span><span class="btn-icon" aria-hidden="true">◐</span></button>
           </div>
         </section>
       </aside>

@@ -94,3 +94,65 @@ export function describeCameraError(error) {
   }
   return { pill: 'CAMERA UNAVAILABLE', context: name ? `Unavailable · ${name}` : 'Unavailable' };
 }
+
+// ---------- expression (Stage 1): a best-effort mood hint, never a fact ----------
+
+/**
+ * Wording tables for `Expression.dominant` (see domain/models.py EMOTIONS). Every label is hedged
+ * ("wirkt …" / "looks …"): the engine reports how a face *appears*, never how someone *is* — and
+ * nothing here may read as a finding, a diagnosis or a lie detector.
+ */
+const EXPRESSION_WORDS = Object.freeze({
+  de: Object.freeze({
+    prefix: 'wirkt ',
+    labels: Object.freeze({ Happiness: 'fröhlich', Sadness: 'traurig', Anger: 'verärgert', Fear: 'ängstlich', Surprise: 'überrascht', Disgust: 'angewidert', Contempt: 'abschätzig', Neutral: 'neutral' }),
+  }),
+  en: Object.freeze({
+    prefix: 'looks ',
+    labels: Object.freeze({ Happiness: 'happy', Sadness: 'sad', Anger: 'angry', Fear: 'fearful', Surprise: 'surprised', Disgust: 'disgusted', Contempt: 'contemptuous', Neutral: 'neutral' }),
+  }),
+});
+
+/** Tile tone per label: mint for a pleasant hint, neutral for neutral/surprise, amber for the rest; unknown labels stay neutral. */
+const EXPRESSION_TONES = Object.freeze({ Happiness: 'ok', Neutral: 'muted', Surprise: 'muted', Sadness: 'warn', Anger: 'warn', Fear: 'warn', Disgust: 'warn', Contempt: 'warn' });
+
+/**
+ * Turn `DetectedFace.expression` (or null) into `{ label, tone, valence, arousal }` — or null when
+ * there is nothing to say. Unknown labels are hedged too and never throw.
+ */
+export function describeExpression(expr, lang = 'de') {
+  const dominant = typeof expr?.dominant === 'string' ? expr.dominant : '';
+  if (!dominant) return null;
+  const words = EXPRESSION_WORDS[lang] || EXPRESSION_WORDS.de;
+  const word = Object.hasOwn(words.labels, dominant) ? words.labels[dominant] : dominant.toLowerCase();
+  return {
+    label: `${words.prefix}${word}`,
+    tone: EXPRESSION_TONES[dominant] || 'muted',
+    valence: Number.isFinite(expr.valence) ? expr.valence : null,
+    arousal: Number.isFinite(expr.arousal) ? expr.arousal : null,
+  };
+}
+
+/** Bar geometry for valence/arousal: -1..1 → 0..100 (%), clamped; null when there is no number. */
+export function axisPercent(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(Math.min(1, Math.max(-1, value)) * 50 + 50);
+}
+
+/**
+ * Event-stream policy for mood entries. Per-frame hints flicker; the log is an evidence layer,
+ * so a hedged label is logged only once it has held for `stableTicks` consecutive frames and
+ * differs from the last logged one. `stableTicks` frames without a label end the mood, so the
+ * same mood logs again when it returns (mirrors the server-side MoodTracker's reset).
+ * Returns the next tracker plus `log` (the label to log, or null). Start with `trackMood(null, …)`.
+ */
+export function trackMood(prev, label, stableTicks = 3) {
+  const t = prev || { candidate: null, streak: 0, missing: 0, logged: null };
+  if (!label) {
+    const missing = t.missing + 1;
+    return { candidate: null, streak: 0, missing, logged: missing >= stableTicks ? null : t.logged, log: null };
+  }
+  const streak = label === t.candidate ? t.streak + 1 : 1;
+  const log = streak >= stableTicks && label !== t.logged ? label : null;
+  return { candidate: label, streak, missing: 0, logged: log || t.logged, log };
+}

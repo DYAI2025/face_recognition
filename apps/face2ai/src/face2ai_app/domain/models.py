@@ -116,6 +116,9 @@ class SystemStatus(BaseModel):
     greeting_cooldown_seconds: int
     agent_connected: bool = False
     event_subscribers: int = 0
+    expression_available: bool = False  # the opt-in expression engine (MediaPipe extra + model asset) is loaded
+    expression_reason: str | None = None  # why it is not available, when it is not
+    expression_enabled: bool = False  # runtime toggle: expressions are attached to recognize responses
 
 
 class PresenceState(StrEnum):

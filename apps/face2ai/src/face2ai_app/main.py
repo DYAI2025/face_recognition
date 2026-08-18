@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from face2ai_app.adapters.face_recognition_engine import FaceRecognitionEngine
 from face2ai_app.adapters.json_identity_store import JsonIdentityStore
+from face2ai_app.adapters.mediapipe_expression import MediaPipeExpressionEngine
 from face2ai_app.api.routes import router
 from face2ai_app.config import Settings
 from face2ai_app.domain.errors import IdentityStoreCorrupted
@@ -19,19 +21,38 @@ from face2ai_app.services.presence import PresenceTracker
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+logger = logging.getLogger(__name__)
 
-def create_app(*, settings: Settings | None = None, engine=None, store=None) -> FastAPI:
+
+def _log_engine(name: str, available: bool, reason: str | None) -> None:
+    if available:
+        logger.info("%s engine available", name)
+    else:
+        logger.warning("%s engine unavailable: %s", name, reason or "no reason given")
+
+
+def create_app(*, settings: Settings | None = None, engine=None, store=None, expression=None) -> FastAPI:
     app_settings = settings or Settings.from_env()
     recognition_engine = engine or FaceRecognitionEngine()
     identity_store = store or JsonIdentityStore(app_settings.identity_store_path)
+    # Always constructed: it is unavailable-not-crashing when the extra or the model asset is missing.
+    expression_engine = expression or MediaPipeExpressionEngine(app_settings.expression_models_dir)
+    _log_engine("recognition", recognition_engine.available, recognition_engine.availability_reason)
+    _log_engine("expression", expression_engine.available, expression_engine.availability_reason)
 
     app = FastAPI(title="Face2AI", version="0.1.0", docs_url="/api/docs", redoc_url=None)
     app.state.settings = app_settings
-    app.state.identity_service = IdentityService(
+    service = IdentityService(
         engine=recognition_engine,
         store=identity_store,
         tolerance=app_settings.match_tolerance,
+        expression=expression_engine,
     )
+    # Opt-in: env can pre-enable, but only an available engine; POST /api/expression toggles at runtime.
+    service.expression_enabled = bool(app_settings.expression_enabled and expression_engine.available)
+    if app_settings.expression_enabled and not expression_engine.available:
+        logger.warning("FACE2AI_EXPRESSION_ENABLED is set but the expression engine is unavailable; staying off")
+    app.state.identity_service = service
     # Presence + events: derived from RecognitionEvents, consumed by agents / Party Mirror.
     # They never touch matching and never carry frames or encodings.
     app.state.presence = PresenceTracker(

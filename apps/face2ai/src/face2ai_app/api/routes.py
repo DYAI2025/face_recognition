@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from face2ai_app import __version__
@@ -96,6 +97,7 @@ def system_status(request: Request) -> SystemStatus:
     service = _service(request)
     settings = _settings(request)
     events = _events(request)
+    expression_available = _expression_available(service)
     return SystemStatus(
         version=__version__,
         engine_available=service.engine.available,
@@ -104,7 +106,38 @@ def system_status(request: Request) -> SystemStatus:
         greeting_cooldown_seconds=settings.greeting_cooldown_seconds,
         agent_connected=events.connected(EVENT_ROLE_AGENT),
         event_subscribers=events.subscriber_count,
+        expression_available=expression_available,
+        expression_reason=None if expression_available else _expression_reason(service),
+        expression_enabled=bool(service.expression_enabled),
     )
+
+
+def _expression_available(service) -> bool:
+    return service.expression is not None and bool(service.expression.available)
+
+
+def _expression_reason(service) -> str:
+    if service.expression is None:
+        return "not configured"
+    return service.expression.availability_reason or "expression engine unavailable"
+
+
+class ExpressionToggle(BaseModel):
+    enabled: bool
+
+
+@router.post("/api/expression")
+async def set_expression(request: Request, body: ExpressionToggle) -> dict[str, bool]:
+    """Runtime opt-in: attach best-effort expression hints to recognize responses. Off by default.
+
+    Enabling needs a loaded engine (409 otherwise); disabling is always allowed.
+    """
+    service = _service(request)
+    available = _expression_available(service)
+    if body.enabled and not available:
+        raise HTTPException(status_code=409, detail=f"expression engine unavailable: {_expression_reason(service)}")
+    service.expression_enabled = body.enabled
+    return {"enabled": service.expression_enabled, "available": available}
 
 
 @router.post("/api/recognize", response_model=RecognitionEvent)

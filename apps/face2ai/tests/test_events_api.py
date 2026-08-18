@@ -66,14 +66,16 @@ class LiveServer:
 
 
 @pytest.fixture
-def live(tmp_path: Path, fake_engine) -> Iterator[LiveServer]:
+def live(tmp_path: Path, fake_engine, fake_expression) -> Iterator[LiveServer]:
     settings = Settings(
         data_dir=tmp_path,
         presence_stable_ticks=1,
         events_heartbeat_seconds=0.05,
         greeting_cooldown_seconds=7,
     )
-    app = create_app(settings=settings, engine=fake_engine, store=JsonIdentityStore(settings.identity_store_path))
+    app = create_app(
+        settings=settings, engine=fake_engine, store=JsonIdentityStore(settings.identity_store_path), expression=fake_expression
+    )
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
     thread = threading.Thread(target=server.run, name="test-uvicorn", daemon=True)
@@ -216,9 +218,11 @@ def test_recognize_response_signals_agent_ownership_per_frame(live, fake_engine,
         assert live.client.post("/api/recognize", content=b"frame", headers=HEADERS).headers["x-face2ai-agent"] == "1"
 
 
-def test_stale_presence_expires_to_no_signal_and_is_published(tmp_path: Path, fake_engine, face):
+def test_stale_presence_expires_to_no_signal_and_is_published(tmp_path: Path, fake_engine, fake_expression, face):
     settings = Settings(data_dir=tmp_path, presence_stable_ticks=1, presence_stale_seconds=0.2, events_heartbeat_seconds=0.05)
-    app = create_app(settings=settings, engine=fake_engine, store=JsonIdentityStore(settings.identity_store_path))
+    app = create_app(
+        settings=settings, engine=fake_engine, store=JsonIdentityStore(settings.identity_store_path), expression=fake_expression
+    )
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
     thread = threading.Thread(target=server.run, daemon=True)

@@ -1,24 +1,39 @@
 from __future__ import annotations
 
+import logging
 import math
 
 from face2ai_app.domain.errors import EnrollmentRejected, RecognitionUnavailable
 from face2ai_app.domain.models import (
+    DetectedFace,
     FaceObservation,
     IdentityRecord,
     IdentitySummary,
     RecognitionEvent,
     RecognitionState,
 )
+from face2ai_app.ports.expression import ExpressionEngine
 from face2ai_app.ports.identity_store import IdentityStore
 from face2ai_app.ports.recognition import RecognitionEngine
 
+logger = logging.getLogger(__name__)
+
 
 class IdentityService:
-    def __init__(self, engine: RecognitionEngine, store: IdentityStore, tolerance: float) -> None:
+    def __init__(
+        self,
+        engine: RecognitionEngine,
+        store: IdentityStore,
+        tolerance: float,
+        expression: ExpressionEngine | None = None,
+    ) -> None:
         self.engine = engine
         self.store = store
         self.tolerance = tolerance
+        # Expression is an opt-in *hint* attached to observations; it never takes part in matching.
+        self.expression = expression
+        self.expression_enabled = False  # runtime toggle (POST /api/expression); main.py seeds it from settings
+        self._expression_warned = False
 
     def _nearest(
         self, candidate: list[float], identities: list[IdentityRecord]
@@ -57,6 +72,7 @@ class IdentityService:
                     match_distance=distance,
                 )
             )
+        self._attach_expressions(image_bytes, detected, observations)
 
         if len(observations) > 1:
             return RecognitionEvent(
@@ -71,6 +87,27 @@ class IdentityService:
             faces=observations,
             can_enroll=not observation.matched,
         )
+
+    def _attach_expressions(
+        self, image_bytes: bytes, detected: list[DetectedFace], observations: list[FaceObservation]
+    ) -> None:
+        """Best effort: a failing expression engine leaves ``expression`` None and never breaks recognition."""
+        engine = self.expression
+        if engine is None or not self.expression_enabled or not engine.available:
+            return
+        try:
+            expressions = engine.analyze(image_bytes, [face.box for face in detected])
+        except Exception as exc:
+            logger.log(
+                logging.DEBUG if self._expression_warned else logging.WARNING,
+                "expression analysis failed, recognition continues without it: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            self._expression_warned = True
+            return
+        for observation, expression in zip(observations, expressions):
+            observation.expression = expression
 
     def enroll(self, image_bytes: bytes, display_name: str, consent: bool) -> IdentitySummary:
         clean_name = display_name.strip()

@@ -155,8 +155,9 @@ function applyExpression(available, reason, enabled) {
   state.expression = { available: available === true, reason: reason || null, enabled: enabled === true };
   els.expressionButton.disabled = !state.expression.available;
   els.expressionLabel.textContent = state.expression.enabled ? 'Expression: on' : 'Expression: off';
+  els.expressionButton.setAttribute('aria-pressed', String(state.expression.enabled));
   els.expressionButton.title = state.expression.available
-    ? (state.expression.enabled ? 'Turn expression hints off' : 'Turn expression hints on — a per-frame hint, nothing is stored')
+    ? (state.expression.enabled ? 'Turn expression hints off' : 'Turn expression hints on — a per-frame hint, nothing is persisted')
     : `Not available · ${state.expression.reason || 'expression engine unavailable'}`;
   if (state.expression.enabled !== wasEnabled) clearExpression(); // switched either way: the reading restarts
 }
@@ -167,7 +168,7 @@ async function toggleExpression() {
   try {
     const result = await api.setExpression(enable);
     addEvent(result.enabled ? 'Expression on' : 'Expression off', result.enabled
-      ? 'Expression hints are shown per frame ("looks …"). None of it is stored.'
+      ? 'Expression hints are shown per frame ("looks …"). Nothing is persisted.'
       : 'No more expression hints; results carry identity only again.');
   } catch (error) {
     // 409 (engine unavailable) or any other failure: surface the server's detail, claim nothing.

@@ -127,7 +127,7 @@ export function describeExpression(expr, lang = 'de') {
   const word = Object.hasOwn(words.labels, dominant) ? words.labels[dominant] : dominant.toLowerCase();
   return {
     label: `${words.prefix}${word}`,
-    tone: EXPRESSION_TONES[dominant] || 'muted',
+    tone: Object.hasOwn(EXPRESSION_TONES, dominant) ? EXPRESSION_TONES[dominant] : 'muted',
     valence: Number.isFinite(expr.valence) ? expr.valence : null,
     arousal: Number.isFinite(expr.arousal) ? expr.arousal : null,
   };

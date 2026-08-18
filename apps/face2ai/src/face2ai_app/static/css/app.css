@@ -176,7 +176,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outl
 .metric-wide { grid-column: 1 / -1; }
 .metric-note { margin-left: 6px; color: var(--muted-2); letter-spacing: .08em; text-transform: none; }
 .mood-bars { display: grid; gap: 6px; margin-top: 9px; }
-.mood-bars[hidden] { display: none; }
 .mood-bar { display: grid; grid-template-columns: 54px 1fr 40px; align-items: center; gap: 8px; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
 .mood-bar-track { position: relative; height: 4px; border-radius: 999px; background: rgba(190, 219, 234, .1); overflow: hidden; }
 .mood-bar-track::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(190, 219, 234, .34); }

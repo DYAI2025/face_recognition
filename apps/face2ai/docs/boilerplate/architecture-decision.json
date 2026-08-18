@@ -21,6 +21,6 @@
   "review_triggers": ["two or more frontend complexity triggers in ADR-001 fire", "recognition engine compatibility fails", "product moves beyond local invited-adult S0 use"],
   "migration_signals": ["Party Mirror adds complex routing/timelines", "dedicated distribution becomes a product goal"],
   "diagram_paths": ["docs/boilerplate/ARCHITECTURE.md"],
-  "adr_paths": ["docs/architecture/ADR-001-local-modular-monolith.md", "docs/architecture/ADR-002-voice-agent.md", "docs/architecture/ADR-003-expression-engine.md"],
+  "adr_paths": ["docs/architecture/ADR-001-local-modular-monolith.md", "docs/architecture/ADR-002-voice-agent.md", "docs/architecture/ADR-003-expression-engine.md", "docs/architecture/ADR-004-expression-dynamics.md"],
   "evidence_refs": ["EV-001", "EV-002", "EV-003", "EV-004", "EV-005"]
 }

@@ -75,3 +75,57 @@ curl -s -N 'http://127.0.0.1:8765/api/events?role=probe'                        
 9. Record: mediapipe/emotiefflib/onnxruntime versions, per-frame `analyze` timing (M1 reference: ~146 ms cold, ~77 ms warm for one face), which labels you could and could not provoke.
 
 Nothing in this gate may be described as the person *being* happy/sad — record what the tile *said*.
+
+## Expression dynamics gate (ADR-004, actions + timeline)
+
+Unit tests drive `ActionTracker`/`AffectHistory` with synthetic blendshapes; that proves the state
+machine, not that a real face produces readable actions. Mandatory on the target Mac before claiming
+Stage 2 runs. Prerequisites: the ADR-003 gate above (extras installed, models fetched, app running,
+`expression_available:true`). Quote every URL containing `?` in single quotes — zsh globs otherwise.
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/api/expression -H 'content-type: application/json' -d '{"enabled":true}'   # {"enabled":true,"available":true}
+curl -s -N 'http://127.0.0.1:8765/api/events?role=probe'      # leave running in a second shell: expect `event: mood` and `event: action`
+```
+
+1. **Brief smile.** With the browser camera on and one face in frame, smile for about a second and
+   let it go. The event stream shows an entry `Expression: <name>: brief smile (0.9 s)` (any
+   duration ≤ 1.0 s reads "brief"), and the probe shell shows an `event: action` frame whose data
+   has `"action":"smile"`, `onset_at`/`apex_at`/`offset_at`, `peak`, `duration_ms`, `frames`.
+   Record the raw frame.
+2. **Held smile.** Smile and hold it for ≥ 5 s, then relax. The entry now reads
+   `Expression: <name>: held smile (x s)` with `duration_ms` ≥ 5000 (roughly eight frames at this loop rate — record the actual `frames`).
+   A smile that never ends (you leave frame, reset, or toggle off while smiling) must produce **no**
+   event — the offset is unknown and is never guessed. Verify that too.
+3. **Sparkline.** Watch the Expression tile while you change expression: the small line under the
+   valence/arousal bars appears once two readings exist and moves with them (up = positive valence).
+   It is drawn from this page's own frames; covering the camera or toggling expression off clears it.
+4. **Timeline.**
+   ```bash
+   curl -s 'http://127.0.0.1:8765/api/expression/timeline?seconds=120' | head -c 400
+   curl -s 'http://127.0.0.1:8765/api/expression/timeline?seconds=120&identity_id=<id>' | head -c 400
+   ```
+   The first shows non-empty `samples` plus the `moods` and `actions` you provoked; the second shows
+   only that person's. `seconds` is bounded 10..3600 — `?seconds=5` must fail with 422.
+5. **Reset empties it.**
+   ```bash
+   curl -s -X POST http://127.0.0.1:8765/api/presence/reset > /dev/null
+   curl -s 'http://127.0.0.1:8765/api/expression/timeline?seconds=600'
+   # {"seconds":600,"samples":[],"moods":[],"actions":[]}
+   ```
+   Nothing was persisted: a restart of the app must show the same empty snapshot.
+6. **Hermes pane** (after `apps/face2ai-hermes-plugin/deploy.sh` and ⌘K → Reload desktop plugins):
+   the Face2AI pane shows "Valenz · letzte 10 min" as a sparkline (with the "~0,6 s" resolution
+   note), "Stimmung zuletzt" and "Ausdruck zuletzt" with hedged German entries ("kurzes Lächeln
+   (0.9 s)"). Check the proxy directly as well, against the Hermes dashboard host/port from
+   `hermes config` (do not guess it): `curl -s '<hermes-dashboard>/api/plugins/face2ai/timeline?seconds=600' | head -c 200`.
+7. **Nothing gates on it.** While actions are firing, recognition, enrollment and the greeting must
+   behave exactly as in the ADR-003 gate, and the voice agent must not mention or react to a single
+   action (`uv run face2ai-agent smoke "Was war gerade?"` stays mood-level and hedged).
+8. Record: which actions you could and could not provoke, the measured `duration_ms`/`frames` of a
+   brief and a held smile, how many `action` frames a minute of normal talking produced, and the
+   sizes of `samples`/`moods`/`actions` after that minute.
+
+Timing here is quantized to ~0.6 s (the 450 ms loop plus round trip). Nothing in this gate may be
+recorded as a micro-expression, as the person *being* anything, or as a cause ("smiled because …") —
+record what the stream *said*.

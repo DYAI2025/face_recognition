@@ -73,7 +73,9 @@ const TONE_CLASS = {
 const MOOD_LABELS = { Happiness: 'fröhlich', Sadness: 'traurig', Anger: 'verärgert', Fear: 'ängstlich', Surprise: 'überrascht', Disgust: 'angewidert', Contempt: 'abschätzig', Neutral: 'neutral' }
 
 function fmtAxis(value) {
-  return Number.isFinite(value) ? (value >= 0 ? '+' : '') + value.toFixed(1) : null
+  if (!Number.isFinite(value)) return null
+  const rounded = Number(value.toFixed(1)) + 0 // + 0 turns -0 into 0 so tiny negatives print as +0.0
+  return (rounded >= 0 ? '+' : '') + rounded.toFixed(1)
 }
 
 /** "wirkt fröhlich (Valenz +0.6, Erregung +0.1)" or '' when there is no mood; unknown labels stay hedged. */

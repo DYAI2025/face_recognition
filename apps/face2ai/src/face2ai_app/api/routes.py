@@ -112,6 +112,8 @@ def _publish_presence_transition(request: Request, transition: PresenceTransitio
     if PresenceState.NO_SIGNAL in (transition.from_state, transition.to_state):
         mood_ended = _mood(request).reset(transition.at)
         _actions(request).reset()
+    if mood_ended is not None:
+        _history(request).record_mood(mood_ended)  # the timeline sees every mood end, not only frame-driven ones
     _events(request).publish("presence", transition)
     if mood_ended is not None:
         _events(request).publish("mood", mood_ended)
@@ -137,7 +139,8 @@ def _observe_expression(request: Request, event: RecognitionEvent, now: datetime
     presence = tracker.snapshot(now)
     key = f"{presence.state}:{presence.identity_id or ''}"
     who = {"identity_id": presence.identity_id, "display_name": presence.display_name}
-    expression = _primary_expression(presence, event)
+    # toggle-off race: a frame that left the browser before the toggle must not restart affect/actions
+    expression = None if not _service(request).expression_enabled else _primary_expression(presence, event)
     mood, history, events = _mood(request), _history(request), _events(request)
 
     transition = mood.observe(key, expression, now, **who)
@@ -155,11 +158,13 @@ def _observe_expression(request: Request, event: RecognitionEvent, now: datetime
             history.record_action(action)
     except Exception as exc:  # hints must never take recognition down (e.g. a model validation error)
         state = request.app.state
+        first = not getattr(state, "expression_dynamics_warned", False)
         logger.log(
-            logging.DEBUG if getattr(state, "expression_dynamics_warned", False) else logging.WARNING,
+            logging.WARNING if first else logging.DEBUG,
             "expression dynamics failed, recognition continues without them: %s: %s",
             type(exc).__name__,
             exc,
+            exc_info=first,  # the one WARNING carries the traceback; the DEBUG repeats stay one-liners
         )
         state.expression_dynamics_warned = True
 
@@ -213,11 +218,13 @@ async def set_expression(request: Request, body: ExpressionToggle) -> dict[str, 
     service.expression_enabled = body.enabled
     if not body.enabled:
         # No further frame will carry an expression, so the current mood ends now rather than after
-        # stable_ticks missing frames. Presence itself is unchanged, so its mood fields must be cleared.
+        # stable_ticks missing frames. Presence itself is unchanged, so its mood *and* live affect
+        # fields are cleared — unconditionally: a valence can be live without a committed mood.
         mood_ended = _mood(request).reset()
         _actions(request).reset()  # active actions are dropped, not completed: their offset is unknown
+        _presence(request).set_mood(None, None, None)
         if mood_ended is not None:
-            _presence(request).set_mood(None, None, None)
+            _history(request).record_mood(mood_ended)
             _events(request).publish("mood", mood_ended)
     return {"enabled": service.expression_enabled, "available": service.expression_available}
 
@@ -318,8 +325,8 @@ def expression_timeline(
 ) -> TimelineSnapshot:
     """In-memory affect history (live valence/arousal samples, mood changes, completed facial actions)
     of the last ``seconds`` — bounded, never persisted, cleared on ``POST /api/presence/reset`` and
-    restart. Hints, never facts. ``identity_id`` narrows it to one known person."""
-    return _history(request).snapshot(seconds=seconds, identity_id=identity_id)
+    restart. Hints, never facts. ``identity_id`` narrows it to one known person (empty = no filter)."""
+    return _history(request).snapshot(seconds=seconds, identity_id=identity_id or None)
 
 
 def _sse(event: str, data: dict[str, Any], event_id: int | None = None) -> str:

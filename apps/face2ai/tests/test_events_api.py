@@ -27,7 +27,9 @@ from face2ai_app.main import create_app
 HEADERS = {"content-type": "image/jpeg"}
 HAPPY = Expression(dominant="Happiness", scores={"Happiness": 0.9}, valence=0.6, arousal=0.1)
 # MoodTracker EMA (alpha 0.5) starts at 0: two HAPPY frames -> score 0.675 (>= min_score 0.5, commits on
-# the second frame), valence 0.3 -> 0.45, arousal 0.05 -> 0.075. Both are frozen at commit time.
+# the second frame), valence 0.3 -> 0.45, arousal 0.05 -> 0.075. The *mood event* freezes both at commit
+# time; the presence carries the LIVE smoothed values (Stage 2), which equal these only on the very frame
+# the mood commits — a later frame moves the presence while the mood event keeps its frozen pair.
 EMA_VALENCE_2 = 0.45
 EMA_AROUSAL_2 = 0.075
 
@@ -77,6 +79,7 @@ def live(tmp_path: Path, fake_engine, fake_expression) -> Iterator[LiveServer]:
         data_dir=tmp_path,
         presence_stable_ticks=1,
         mood_stable_ticks=1,
+        action_min_frames=1,  # one frame may complete an action: a dropped one is then provably dropped
         events_heartbeat_seconds=0.05,
         greeting_cooldown_seconds=7,
     )
@@ -442,12 +445,34 @@ def test_presence_reset_clears_the_timeline_and_active_actions(live, fake_engine
 
 
 def test_toggle_off_drops_active_actions(live, fake_engine, fake_expression, face):
+    """The smile that was running when expressions went off must not be completed by a later frame.
+
+    Toggling back on before the neutral frame is what makes this discriminating: the frame *is*
+    readable (so it would close a still-active smile, ``action_min_frames`` being 1), and it does
+    not carry the expression-off ``None`` that would drop the action for a second reason.
+    """
     fake_engine.faces = [face]
     _enable_expression(live, fake_expression, [smiling(0.9)])
-    _recognize(live)  # seq 1 presence; smile active
+    _recognize(live)  # seq 1 presence; smile active (onset, 1 frame)
     assert live.client.post("/api/expression", json={"enabled": False}).json()["enabled"] is False
+    assert live.client.post("/api/expression", json={"enabled": True}).json()["enabled"] is True
     fake_expression.expressions = [smiling(0.0)]
-    _recognize(live)  # expression off: engine not consulted, no action can complete
+    _recognize(live)  # readable neutral frame: it would close a smile that was still active
     frames = live.sse("/api/events?after=0", wanted=3)  # heartbeats included: proves nothing else was buffered
-    assert [f["event"] for f in frames] == ["hello", "presence", "heartbeat"]
+    assert [f["event"] for f in frames] == ["hello", "presence", "heartbeat"]  # no `action`: dropped, not completed
     assert live.client.get("/api/expression/timeline").json()["actions"] == []
+
+
+def test_toggle_off_clears_a_live_affect_without_a_committed_mood(live, fake_engine, fake_expression, face):
+    """The live valence exists long before a mood commits, so the toggle clears the presence unconditionally."""
+    fake_engine.faces = [face]
+    weak = Expression(dominant="Neutral", scores={"Neutral": 0.4, "Happiness": 0.3}, valence=0.2, arousal=0.0)
+    _enable_expression(live, fake_expression, [weak])
+    _recognize(live)  # seq 1 presence; EMA 0.2 < min_score: live affect, no mood
+    presence = live.client.get("/api/presence").json()
+    assert presence["mood"] is None and presence["valence"] == pytest.approx(0.1)
+    assert live.client.post("/api/expression", json={"enabled": False}).json()["enabled"] is False
+    presence = live.client.get("/api/presence").json()
+    assert (presence["state"], presence["mood"], presence["valence"], presence["arousal"]) == ("UNKNOWN", None, None, None)
+    frames = live.sse("/api/events?after=0", wanted=3)  # no mood was committed, so nothing ends on the wire
+    assert [f["event"] for f in frames] == ["hello", "presence", "heartbeat"]

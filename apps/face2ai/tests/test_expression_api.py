@@ -132,6 +132,18 @@ def test_timeline_query_validation(client):
     assert client.get("/api/expression/timeline?seconds=10&identity_id=abc").json()["seconds"] == 10
 
 
+def test_empty_identity_filter_is_not_a_filter(client, fake_engine, fake_expression, face):
+    """``?identity_id=`` means "everyone", not ``identity_id == ""`` — which would match nobody."""
+    fake_engine.faces = [face]
+    fake_expression.expressions = [HAPPY]
+    client.post("/api/expression", json={"enabled": True})
+    _recognize(client)
+    unfiltered = client.get("/api/expression/timeline").json()
+    assert len(unfiltered["samples"]) == 1  # an UNKNOWN person: the sample's identity_id is None
+    assert client.get("/api/expression/timeline?identity_id=").json() == unfiltered
+    assert client.get("/api/expression/timeline?identity_id=nobody").json()["samples"] == []  # a real filter still filters
+
+
 def test_expression_dynamics_failure_never_breaks_recognition(client, fake_engine, fake_expression, face, caplog):
     """Actions/history are hints: a failure there is warned once (then debug) and recognize still answers."""
     import logging

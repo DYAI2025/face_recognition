@@ -122,22 +122,40 @@ def test_expression_toggle_and_tile_are_present_and_off_by_default():
     assert button, "expression toggle button missing"
     assert "disabled" in button.group(0), "toggle must start disabled until /api/status says the engine is available"
     assert re.search(r"id=\"expressionTile\"", html), "expression metric tile missing"
-    assert re.search(r"id=\"expressionValue\"[^>]*>aus<", html), "tile must start as 'aus' (opt-in default off)"
+    assert re.search(r"id=\"expressionValue\"[^>]*>off<", html), "tile must start as 'off' (opt-in default off)"
     for bar in ("valenceFill", "arousalFill"):
         assert re.search(rf"class=\"mood-bar-fill\" id=\"{bar}\"", html), bar
-    assert "Ausdruck: aus" in html
+    assert "Expression: off" in html
+    assert "a hint, not a fact" in html, "the tile must say what it is: a hint, never a fact"
 
 
 def test_expression_wording_is_hedged_and_never_a_certainty(client):
-    """The served bundle speaks of how a face *appears* ("wirkt …"); nothing reads as a finding."""
+    """The served bundle speaks of how a face *appears* ("looks …" — the shell is English); nothing reads as a finding.
+
+    model.js keeps both wording tables (de "wirkt …" / en "looks …") so the view-model stays bilingual;
+    app.js selects English. Forbidden anywhere in the shell: "is happy", "ist fröhlich", "erkannt", and
+    "detected" applied to a mood/expression (faces may be detected; moods only ever *look* like something).
+    """
     model_js = client.get("/assets/js/model.js").text
     assert "wirkt " in model_js
     assert "looks " in model_js
     assert "ist fröhlich" not in model_js
+    app_js = client.get("/assets/js/app.js").text
+    assert "EXPRESSION_LANG = 'en'" in app_js, "the browser shell is English; the tile must say 'looks …'"
+    assert "looks " in app_js
+    assert "expressionButton" in app_js
+    assert "Expression: off" in app_js and "Expression: on" in app_js
+    assert "Not available · " in app_js
     for path in [INDEX, STATIC / "css" / "app.css", *_js_files()]:
         text = path.read_text(encoding="utf-8").lower()
         assert "erkannt" not in text, f"{path.name}: expression must never be presented as 'erkannt'"
         assert not re.search(r"\bist (fröhlich|traurig|verärgert|ängstlich|überrascht|angewidert|abschätzig|neutral)\b", text), path.name
+        assert not re.search(r"\b(is|are|was|were) (happy|sad|angry|fearful|surprised|disgusted|contemptuous)\b", text), (
+            f"{path.name}: expression must be hedged ('looks happy'), never asserted ('is happy')"
+        )
+        assert not re.search(r"\b(mood|expression|emotion)s? (is |was |)detected\b|\bdetected (mood|expression|emotion)", text), (
+            f"{path.name}: a mood is never 'detected' — it only ever 'looks' like something"
+        )
 
 
 def test_expression_toggle_is_the_only_thing_the_browser_sends_for_the_feature():

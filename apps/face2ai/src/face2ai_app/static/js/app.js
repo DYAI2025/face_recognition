@@ -11,7 +11,7 @@ const RECOGNIZE_ERROR_BACKOFF_MS = 1500;
 const STATUS_INTERVAL_MS = 5000;
 const MAX_EVENTS = 8;
 const MOOD_STABLE_TICKS = 3;   // frames a hedged label must hold before it is logged (matches the server's mood default)
-const EXPRESSION_LANG = 'de';  // wording table in model.js; the tile speaks German ("wirkt …")
+const EXPRESSION_LANG = 'en';  // wording table in model.js; the shell is English, so the tile says "looks …" (hedged, never a fact)
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 const els = Object.fromEntries([...document.querySelectorAll('[id]')].map((el) => [el.id, el]));
@@ -130,7 +130,7 @@ function setExpressionTile(text, tone, described = null) {
 
 /** Per recognize result: one face → its hedged expression; several, none, or no expression → nothing to say. */
 function renderExpression(event) {
-  if (!state.expression.enabled) { setExpressionTile('aus', 'muted'); return; }
+  if (!state.expression.enabled) { setExpressionTile('off', 'muted'); return; }
   const faces = Array.isArray(event?.faces) ? event.faces : [];
   const described = faces.length === 1 ? describeExpression(faces[0].expression, EXPRESSION_LANG) : null;
   if (!described) {
@@ -140,13 +140,13 @@ function renderExpression(event) {
   }
   // Event stream: only stable label changes, kept apart from the presence transitionKey.
   state.mood = trackMood(state.mood, described?.label ?? null, MOOD_STABLE_TICKS);
-  if (state.mood.log) addEvent('Stimmung', `${faces[0]?.display_name || 'Person'} ${state.mood.log}.`);
+  if (state.mood.log) addEvent('Mood', `${faces[0]?.display_name || 'someone'} ${state.mood.log}.`);
 }
 
 /** Nothing being recognized right now (camera off, paused, error): the tile shows no reading and the mood log restarts. */
 function clearExpression() {
   state.mood = null;
-  setExpressionTile(state.expression.enabled ? '—' : 'aus', 'muted');
+  setExpressionTile(state.expression.enabled ? '—' : 'off', 'muted');
 }
 
 /** /api/status → button + tile state (the server is the only source of truth; a click never sets it). */
@@ -154,10 +154,10 @@ function applyExpression(available, reason, enabled) {
   const wasEnabled = state.expression.enabled;
   state.expression = { available: available === true, reason: reason || null, enabled: enabled === true };
   els.expressionButton.disabled = !state.expression.available;
-  els.expressionLabel.textContent = state.expression.enabled ? 'Ausdruck: an' : 'Ausdruck: aus';
+  els.expressionLabel.textContent = state.expression.enabled ? 'Expression: on' : 'Expression: off';
   els.expressionButton.title = state.expression.available
-    ? (state.expression.enabled ? 'Ausdrucks-Hinweise ausschalten' : 'Ausdrucks-Hinweise einschalten — Einschätzungen pro Bild, nichts wird gespeichert')
-    : `Nicht verfügbar · ${state.expression.reason || 'expression engine unavailable'}`;
+    ? (state.expression.enabled ? 'Turn expression hints off' : 'Turn expression hints on — a per-frame hint, nothing is stored')
+    : `Not available · ${state.expression.reason || 'expression engine unavailable'}`;
   if (state.expression.enabled !== wasEnabled) clearExpression(); // switched either way: the reading restarts
 }
 
@@ -166,13 +166,13 @@ async function toggleExpression() {
   els.expressionButton.disabled = true;
   try {
     const result = await api.setExpression(enable);
-    addEvent(result.enabled ? 'Ausdruck an' : 'Ausdruck aus', result.enabled
-      ? 'Ausdrucks-Hinweise werden pro Bild angezeigt („wirkt …“). Nichts davon wird gespeichert.'
-      : 'Keine Ausdrucks-Hinweise mehr; Ergebnisse tragen wieder nur Identität.');
+    addEvent(result.enabled ? 'Expression on' : 'Expression off', result.enabled
+      ? 'Expression hints are shown per frame ("looks …"). None of it is stored.'
+      : 'No more expression hints; results carry identity only again.');
   } catch (error) {
     // 409 (engine unavailable) or any other failure: surface the server's detail, claim nothing.
-    toast(`Ausdruck nicht verfügbar: ${error.message}`);
-    addEvent('Ausdruck nicht verfügbar', error.message);
+    toast(`Expression not available: ${error.message}`);
+    addEvent('Expression not available', error.message);
   } finally {
     await refreshStatus(); // button label/tile follow /api/status, not the click
   }

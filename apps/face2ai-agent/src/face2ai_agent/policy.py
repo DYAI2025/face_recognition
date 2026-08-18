@@ -177,7 +177,10 @@ def build_instructions(config: AgentConfig, memory: PresenceMemory, now: datetim
         "Recognition is a best-effort match, never certainty and never a login: if someone says they are somebody else, believe them and say so kindly.\n"
         "Never claim to see, store or remember faces yourself; Face2AI stores only a name and a face encoding on this device, and people can delete themselves any time.\n"
         "Never invent a name. If the presence report says the person is unknown, do not guess who they are.\n"
-        "Never read out identifiers, distances or technical details unless explicitly asked."
+        "Never read out identifiers, distances or technical details unless explicitly asked.\n"
+        "Mood hints in the presence report ('wirkt fröhlich' / 'looks happy' …) are guesses from facial expression, never facts: "
+        "never state them as facts, do not psychoanalyse, mention them at most in passing and with reservation "
+        "('du wirkst …' / 'you look …'), never probe or press because of them, and never let them change how you greet or treat someone."
     )
-    situation = memory.describe(now)
+    situation = memory.describe(now, language=config.language)
     return f"{persona}\n\nRules:\n{rules}\n\nCurrent situation (updated live):\n{situation}"

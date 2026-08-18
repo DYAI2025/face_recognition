@@ -115,3 +115,15 @@ def test_announcements_need_setting_and_session_key_and_respect_cooldown():
     plugin._handle_frame(SseFrame("presence", {"sequence": 4, "at": datetime.now(timezone.utc).isoformat(), "from_state": "KNOWN", "to_state": "NO_FACE", "faces": 0}))
     plugin._handle_frame(SseFrame("presence", {"sequence": 5, "at": datetime.now(timezone.utc).isoformat(), "from_state": "NO_FACE", "to_state": "KNOWN", "identity_id": "a", "display_name": "Ben", "faces": 1}))
     assert len(ctx.injected) == 1  # cooldown
+
+
+def test_mood_frames_are_persisted_and_the_system_section_hedges_them():
+    ctx = FakeCtx()
+    plugin.register(ctx)
+    plugin._handle_frame(SseFrame("hello", {"presence": {"state": "KNOWN", "display_name": "Ben", "identity_id": "a"}, "last_sequence": 0}))
+    plugin._handle_frame(SseFrame("mood", {"sequence": 1, "at": datetime.now(timezone.utc).isoformat(), "identity_id": "a", "display_name": "Ben", "from_mood": None, "to_mood": "Happiness", "valence": 0.6, "arousal": 0.1}))
+    assert ctx.state.get("snapshot")["presence"]["mood"] == "Happiness"  # dashboard API sees it
+    assert not [e for e in ctx.emitted if e[0] == "presence_changed"] and ctx.injected == []  # a mood is never a transition or an announcement
+    assert "Ben wirkt fröhlich" in ctx.hooks["pre_llm_call"](platform="desktop")["context"]
+    assert "'wirkt" in ctx.sections["face2ai"] and "never state them as facts" in ctx.sections["face2ai"] and "psychoanaly" in ctx.sections["face2ai"]
+    assert "never a fact" in ctx.tools["presence_now"][0]["description"]

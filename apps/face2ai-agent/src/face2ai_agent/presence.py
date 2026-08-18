@@ -1,6 +1,6 @@
-"""Consume Face2AI presence/store events (Server-Sent Events) and keep a small memory of
+"""Consume Face2AI presence/store/mood events (Server-Sent Events) and keep a small memory of
 who is in front of the camera. This module never sees frames or encodings — only states,
-display names and timestamps, exactly what the Face2AI event stream publishes.
+display names, timestamps and a hedged mood hint, exactly what the Face2AI event stream publishes.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +19,46 @@ import httpx
 logger = logging.getLogger("face2ai_agent.presence")
 
 PRESENCE_STATES = ("NO_SIGNAL", "NO_FACE", "UNKNOWN", "KNOWN", "MULTIPLE_FACES")
+
+# Hedged wording for Face2AI's mood labels (domain/models.py EMOTIONS). Same literal table as the
+# Face2AI UI (static/js/model.js) and the Hermes plugin: a mood is how a face *appears* ("wirkt …" /
+# "looks …"), never how someone *is* — never a finding, never a fact, never a gate for anything.
+MOOD_WORDS: dict[str, dict[str, Any]] = {
+    "de": {
+        "prefix": "wirkt ",
+        "labels": {"Happiness": "fröhlich", "Sadness": "traurig", "Anger": "verärgert", "Fear": "ängstlich",
+                   "Surprise": "überrascht", "Disgust": "angewidert", "Contempt": "abschätzig", "Neutral": "neutral"},
+        "valence": "Valenz", "arousal": "Erregung",
+        "hedge": "nur ein Hinweis aus dem Gesichtsausdruck, keine Tatsache",
+        "generic_subject": "Die Person",
+    },
+    "en": {
+        "prefix": "looks ",
+        "labels": {"Happiness": "happy", "Sadness": "sad", "Anger": "angry", "Fear": "fearful",
+                   "Surprise": "surprised", "Disgust": "disgusted", "Contempt": "contemptuous", "Neutral": "neutral"},
+        "valence": "valence", "arousal": "arousal",
+        "hedge": "only a hint from facial expression, not a fact",
+        "generic_subject": "The person",
+    },
+}
+
+
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def mood_sentence(mood: str | None, valence: float | None, arousal: float | None, *, language: str = "en", subject: str | None = None) -> str:
+    """One hedged sentence for a mood hint, e.g. "Ben wirkt fröhlich (Valenz +0.6, Erregung +0.1) – nur ein
+    Hinweis aus dem Gesichtsausdruck, keine Tatsache." Empty string when there is no mood. Unknown labels
+    are hedged too (lower-cased) and never raise."""
+    if not isinstance(mood, str) or not mood:
+        return ""
+    words = MOOD_WORDS["de"] if language.lower().startswith("de") else MOOD_WORDS["en"]
+    label = words["labels"].get(mood, mood.lower())
+    numbers = [f"{words[key]} {round(value, 1) + 0.0:+.1f}" for key, value in (("valence", valence), ("arousal", arousal)) if value is not None]
+    detail = f" ({', '.join(numbers)})" if numbers else ""
+    dash = "–" if words is MOOD_WORDS["de"] else "—"
+    return f"{subject or words['generic_subject']} {words['prefix']}{label}{detail} {dash} {words['hedge']}."
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,10 +111,14 @@ class Presence:
     faces: int = 0
     since: datetime | None = None
     stale: bool = False
+    mood: str | None = None  # best-effort hint ("wirkt …"), never a fact; None = nothing to say
+    valence: float | None = None  # -1..1
+    arousal: float | None = None  # -1..1
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "Presence":
         state = payload.get("state") if payload.get("state") in PRESENCE_STATES else "NO_SIGNAL"
+        mood = payload.get("mood")
         return cls(
             state=state,
             identity_id=payload.get("identity_id"),
@@ -82,7 +126,17 @@ class Presence:
             faces=int(payload.get("faces") or 0),
             since=_parse_time(payload.get("since")),
             stale=bool(payload.get("stale", False)),
+            mood=mood if isinstance(mood, str) and mood else None,
+            valence=_number(payload.get("valence")),
+            arousal=_number(payload.get("arousal")),
         )
+
+    def with_mood(self, data: dict[str, Any]) -> "Presence":
+        """Apply a ``mood`` event payload (``to_mood`` None = the mood ended); state/identity untouched."""
+        to_mood = data.get("to_mood")
+        if not isinstance(to_mood, str) or not to_mood:
+            return replace(self, mood=None, valence=None, arousal=None)
+        return replace(self, mood=to_mood, valence=_number(data.get("valence")), arousal=_number(data.get("arousal")))
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,14 +227,22 @@ class PresenceMemory:
 
     def apply_transition(self, transition: Transition) -> None:
         self.history.append(transition)
-        self.current = transition.as_presence()
+        self.current = transition.as_presence()  # a fresh presence carries no mood
+
+    def apply_mood(self, data: dict[str, Any]) -> None:
+        """SSE ``mood``: update the hint on the current presence — no transition, no greeting, no refresh."""
+        self.current = self.current.with_mood(data)
 
     def apply_store_change(self, change: StoreChange) -> None:
         self.store_changes.append(change)
         self.identity_count = change.identity_count
 
-    def describe(self, now: datetime | None = None) -> str:
-        """Plain-language situation report for the LLM system prompt / tools."""
+    def describe(self, now: datetime | None = None, *, language: str = "en") -> str:
+        """Plain-language situation report for the LLM system prompt / tools.
+
+        The report itself is English; ``language`` only picks the wording of the hedged mood hint
+        ("wirkt fröhlich" / "looks happy") so the model can reuse it verbatim in the spoken language.
+        """
         now = now or datetime.now(timezone.utc)
         if not self.connected:
             return "The Face2AI camera service is not connected; you cannot see who is here."
@@ -202,6 +264,9 @@ class PresenceMemory:
             head += " (No fresh frames lately — the browser tab may be paused.)"
         if self.engine_available is False:
             head += " The recognition engine reports itself unavailable."
+        mood = mood_sentence(p.mood, p.valence, p.arousal, language=language, subject=p.display_name if p.state == "KNOWN" else None)
+        if mood:
+            head += " " + mood
         recent = [
             t for t in list(self.history)[-8:]
             if t.to_state == "KNOWN" and t.display_name and t.identity_id != p.identity_id
@@ -291,6 +356,10 @@ async def run_presence_loop(client: PresenceClient, memory: PresenceMemory, on_e
             memory.apply_heartbeat(frame.data)
             if on_event:
                 await on_event("heartbeat", memory.current, False)
+        elif frame.event == "mood":
+            memory.apply_mood(frame.data)
+            if on_event:
+                await on_event("mood", frame.data, memory.is_replayed(frame.data))
         elif frame.event == "lost":
             memory.connected = False
             if on_event:

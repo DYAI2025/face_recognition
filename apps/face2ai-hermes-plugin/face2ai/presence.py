@@ -2,7 +2,7 @@
 
 Pure Python (stdlib only) so it unit-tests without Hermes and can be imported by both the
 gateway plugin (writer) and the dashboard API (reader). Nothing here handles frames or face
-encodings — Face2AI's event stream never carries them.
+encodings — Face2AI's event stream never carries them; a mood is a hedged hint ("wirkt …"), never a fact.
 """
 
 from __future__ import annotations
@@ -10,11 +10,51 @@ from __future__ import annotations
 import json
 import threading
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator
 
 STATES = ("NO_SIGNAL", "NO_FACE", "UNKNOWN", "KNOWN", "MULTIPLE_FACES")
+
+# Hedged wording for Face2AI's mood labels (apps/face2ai domain/models.py EMOTIONS). Same literal table
+# as the Face2AI UI (static/js/model.js) and the voice agent (face2ai_agent/presence.py): a mood is how
+# a face *appears* ("wirkt …" / "looks …"), never how someone *is* — never a fact, never a gate for anything.
+MOOD_WORDS: dict[str, dict[str, Any]] = {
+    "de": {
+        "prefix": "wirkt ",
+        "labels": {"Happiness": "fröhlich", "Sadness": "traurig", "Anger": "verärgert", "Fear": "ängstlich",
+                   "Surprise": "überrascht", "Disgust": "angewidert", "Contempt": "abschätzig", "Neutral": "neutral"},
+        "valence": "Valenz", "arousal": "Erregung",
+        "hedge": "nur ein Hinweis aus dem Gesichtsausdruck, keine Tatsache",
+        "generic_subject": "Die Person",
+    },
+    "en": {
+        "prefix": "looks ",
+        "labels": {"Happiness": "happy", "Sadness": "sad", "Anger": "angry", "Fear": "fearful",
+                   "Surprise": "surprised", "Disgust": "disgusted", "Contempt": "contemptuous", "Neutral": "neutral"},
+        "valence": "valence", "arousal": "arousal",
+        "hedge": "only a hint from facial expression, not a fact",
+        "generic_subject": "The person",
+    },
+}
+
+
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def mood_sentence(mood: str | None, valence: float | None, arousal: float | None, *, language: str = "de", subject: str | None = None) -> str:
+    """One hedged sentence for a mood hint, e.g. "Ben wirkt fröhlich (Valenz +0.6, Erregung +0.1) – nur ein
+    Hinweis aus dem Gesichtsausdruck, keine Tatsache." Empty string when there is no mood. Unknown labels
+    are hedged too (lower-cased) and never raise."""
+    if not isinstance(mood, str) or not mood:
+        return ""
+    words = MOOD_WORDS["de"] if language.lower().startswith("de") else MOOD_WORDS["en"]
+    label = words["labels"].get(mood, mood.lower())
+    numbers = [f"{words[key]} {round(value, 1) + 0.0:+.1f}" for key, value in (("valence", valence), ("arousal", arousal)) if value is not None]
+    detail = f" ({', '.join(numbers)})" if numbers else ""
+    dash = "–" if words is MOOD_WORDS["de"] else "—"
+    return f"{subject or words['generic_subject']} {words['prefix']}{label}{detail} {dash} {words['hedge']}."
 
 
 @dataclass(frozen=True)
@@ -71,10 +111,14 @@ class Presence:
     faces: int = 0
     since: datetime | None = None
     stale: bool = False
+    mood: str | None = None  # best-effort hint ("wirkt …"), never a fact; None = nothing to say
+    valence: float | None = None  # -1..1
+    arousal: float | None = None  # -1..1
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "Presence":
         state = payload.get("state") if payload.get("state") in STATES else "NO_SIGNAL"
+        mood = payload.get("mood")
         return cls(
             state=state,
             identity_id=payload.get("identity_id"),
@@ -82,7 +126,17 @@ class Presence:
             faces=int(payload.get("faces") or 0),
             since=_parse_time(payload.get("since")),
             stale=bool(payload.get("stale", False)),
+            mood=mood if isinstance(mood, str) and mood else None,
+            valence=_number(payload.get("valence")),
+            arousal=_number(payload.get("arousal")),
         )
+
+    def with_mood(self, data: dict[str, Any]) -> "Presence":
+        """Apply a ``mood`` event payload (``to_mood`` None = the mood ended); state/identity untouched."""
+        to_mood = data.get("to_mood")
+        if not isinstance(to_mood, str) or not to_mood:
+            return replace(self, mood=None, valence=None, arousal=None)
+        return replace(self, mood=to_mood, valence=_number(data.get("valence")), arousal=_number(data.get("arousal")))
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -153,7 +207,7 @@ class PresenceStore:
             if frame.event == "presence":
                 transition = Transition.from_payload(frame.data)
                 self.history.append(transition)
-                self.current = Presence(
+                self.current = Presence(  # a fresh presence carries no mood
                     state=transition.to_state,
                     identity_id=transition.identity_id,
                     display_name=transition.display_name,
@@ -167,6 +221,9 @@ class PresenceStore:
                 count = frame.data.get("identity_count")
                 if isinstance(count, int):
                     self.identity_count = count
+                return None
+            if frame.event == "mood":  # hint changed/ended: not a transition, never a reaction
+                self.current = self.current.with_mood(frame.data)
                 return None
             return None
 
@@ -228,6 +285,9 @@ def describe(store: PresenceStore, *, now: datetime | None = None, language: str
         text += " (Keine frischen Frames – der Browser-Tab pausiert vielleicht.)" if de else " (No fresh frames lately — the browser tab may be paused.)"
     if snap.get("engine_available") is False:
         text += " Die Erkennungs-Engine meldet sich als nicht verfügbar." if de else " The recognition engine reports itself unavailable."
+    mood = mood_sentence(p.get("mood"), p.get("valence"), p.get("arousal"), language=language, subject=p.get("display_name") if state == "KNOWN" else None)
+    if mood:
+        text += " " + mood
     recent = [t for t in snap["history"] if t["to_state"] == "KNOWN" and t["display_name"] and t["identity_id"] != p.get("identity_id")][-4:]
     if recent:
         names = ", ".join(f"{t['display_name']} ({(_parse_time(t['at']) or now).astimezone().strftime('%H:%M')})" for t in recent)

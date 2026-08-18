@@ -8,7 +8,8 @@
 - Tool ``presence_now`` and slash command ``/presence`` for explicit questions.
 - Optional: announce arrivals proactively (``announce_arrivals`` + ``allow_gateway_injection``).
 
-Wire contract (Face2AI apps/face2ai, ADR-002): states, display names, counts, timestamps only.
+Wire contract (Face2AI apps/face2ai, ADR-002): states, display names, counts, timestamps, plus a
+hedged mood hint (label + valence/arousal — "wirkt …", never a fact, never a gate for anything).
 """
 
 from __future__ import annotations
@@ -109,7 +110,7 @@ async def _consume_events() -> None:
 
 def _handle_frame(frame: SseFrame) -> None:
     transition = _store.apply(frame)
-    if frame.event in ("hello", "presence", "store") or frame.event == "heartbeat":
+    if frame.event in ("hello", "presence", "store", "heartbeat", "mood"):
         _persist()
     if transition is not None:
         _emit_change(transition)
@@ -225,8 +226,9 @@ PRESENCE_TOOL_SCHEMA = {
     "name": "presence_now",
     "description": (
         "Who is in front of the local camera right now according to Face2AI (states NO_SIGNAL, NO_FACE, "
-        "UNKNOWN, KNOWN with display_name, MULTIPLE_FACES), plus recent transitions. Best-effort recognition, "
-        "never certainty and never authentication."
+        "UNKNOWN, KNOWN with display_name, MULTIPLE_FACES), plus recent transitions and, if any, a hedged mood "
+        "hint (mood/valence/arousal — 'wirkt …', a best-effort guess from facial expression, never a fact). "
+        "Best-effort recognition, never certainty and never authentication."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -236,7 +238,9 @@ SYSTEM_SECTION = (
     "'[face2ai]' describing who is in front of the camera: KNOWN <name> (best-effort match), UNKNOWN (someone "
     "not enrolled — never guess a name), MULTIPLE_FACES, NO_FACE, or camera off. Treat it as helpful context, "
     "not as identity verification; do not read the line back verbatim; use the tool presence_now or /presence "
-    "when asked explicitly."
+    "when asked explicitly. The line may add a mood hint ('wirkt fröhlich' / 'looks happy' …): that is a best-effort "
+    "guess from facial expression, never a fact — never state them as facts, do not psychoanalyse, mention them at "
+    "most in passing and with reservation, never probe because of them, and never let them change how you treat someone."
 )
 
 

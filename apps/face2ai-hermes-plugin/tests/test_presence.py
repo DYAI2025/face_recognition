@@ -87,3 +87,36 @@ def test_snapshot_is_json_friendly():
     snap = store.snapshot()
     json.dumps(snap)
     assert snap["identity_count"] == 2 and snap["presence"]["since"] == T0.isoformat()
+
+
+def test_describe_includes_hedged_mood_and_mood_frames_update_and_clear():
+    store = PresenceStore()
+    store.apply(SseFrame("hello", {"presence": {"state": "KNOWN", "display_name": "Ben", "identity_id": "a", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}, "last_sequence": 0}), now=T0)
+    assert store.current.mood == "Happiness" and store.current.valence == 0.6 and store.current.arousal == 0.1
+    de = describe(store, now=T0)
+    assert "Ben wirkt fröhlich" in de and "Valenz +0.6" in de and "Erregung +0.1" in de and "keine Tatsache" in de
+    assert "ist fröhlich" not in de and "erkannt" not in de.split("wirkt")[1]
+    en = describe(store, now=T0, language="en")
+    assert "Ben looks happy" in en and "valence +0.6" in en and "arousal +0.1" in en and "not a fact" in en
+    assert "is happy" not in en
+    snap = store.snapshot()
+    assert snap["presence"]["mood"] == "Happiness" and snap["presence"]["valence"] == 0.6 and snap["presence"]["arousal"] == 0.1
+    # a mood frame updates the hint without being a presence transition
+    assert store.apply(SseFrame("mood", {"sequence": 1, "at": T0.isoformat(), "identity_id": "a", "display_name": "Ben", "from_mood": "Happiness", "to_mood": "Sadness", "valence": -0.4, "arousal": -0.2}), now=T0) is None
+    assert store.current.state == "KNOWN" and store.current.mood == "Sadness" and store.current.valence == -0.4
+    assert "Ben wirkt traurig" in describe(store, now=T0) and len(store.history) == 0
+    assert store.apply(SseFrame("mood", {"sequence": 2, "at": T0.isoformat(), "identity_id": "a", "from_mood": "Sadness", "to_mood": "Boredom"}), now=T0) is None
+    assert "wirkt boredom" in describe(store, now=T0)  # unknown label: still hedged, never raises
+    store.apply(SseFrame("mood", {"sequence": 3, "at": T0.isoformat(), "identity_id": "a", "from_mood": "Boredom", "to_mood": None}), now=T0)
+    assert store.current.mood is None and store.current.valence is None and store.current.arousal is None
+    assert "wirkt" not in describe(store, now=T0)
+
+
+def test_presence_transition_starts_a_fresh_presence_without_mood_and_unknown_uses_generic_subject():
+    store = PresenceStore()
+    store.apply(SseFrame("hello", {"presence": {"state": "KNOWN", "display_name": "Ben", "identity_id": "a", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}, "last_sequence": 0}), now=T0)
+    store.apply(SseFrame("presence", {"sequence": 1, "at": T0.isoformat(), "from_state": "KNOWN", "to_state": "UNKNOWN", "faces": 1}), now=T0)
+    assert store.current.mood is None and "wirkt" not in describe(store, now=T0)
+    store.apply(SseFrame("heartbeat", {"presence": {"state": "UNKNOWN", "faces": 1, "mood": "Surprise", "valence": 0.2, "arousal": 0.7}}), now=T0)
+    assert "Die Person wirkt überrascht" in describe(store, now=T0)
+    assert "The person looks surprised" in describe(store, now=T0, language="en")

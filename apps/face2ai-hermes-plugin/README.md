@@ -27,7 +27,15 @@ One installable folder (`face2ai/`), two halves, both opt-in:
   (Hermes' documented seam for live context; system-prompt sections are frozen per session). Withheld
   when the last frame is older than `context_max_age_seconds` (30 s) so Hermes never acts on stale presence.
 - **On demand**: tool `presence_now` (JSON incl. recent transitions), slash command `/presence`.
-- **Static explanation** in the system prompt: what the `[face2ai]` line means, best-effort, never guess names, never authentication.
+- **Mood hint** (Face2AI expression stage 1): presence snapshots and SSE `mood` frames carry `mood`/`valence`/`arousal`.
+  The store keeps them on the current presence (a `presence` transition starts a fresh, mood-less presence;
+  `to_mood: null` ends the hint) and `describe()` appends one hedged sentence in the configured language —
+  "Ben wirkt fröhlich (Valenz +0.6, Erregung +0.1) – nur ein Hinweis aus dem Gesichtsausdruck, keine Tatsache." /
+  "Ben looks happy (valence +0.6, arousal +0.1) — only a hint from facial expression, not a fact." The `[face2ai]`
+  line, `presence_now`, `/presence`, the persisted snapshot (dashboard API) and the desktop pane all carry it; a mood
+  frame is never a transition, never an announcement and never gates anything. The system-prompt section tells
+  Hermes to treat it as a guess — never state it as a fact, never psychoanalyse or probe.
+- **Static explanation** in the system prompt: what the `[face2ai]` line means, best-effort, never guess names, never authentication, mood hints are guesses ("wirkt …"), never facts.
 - **Optional proactive**: `announce_arrivals: true` + `plugins.entries.face2ai.allow_gateway_injection: true` →
   on a fresh `→ KNOWN` transition the plugin injects a user-turn into the most recent gateway session
   (per-person cooldown). Off by default; the voice agent already greets.

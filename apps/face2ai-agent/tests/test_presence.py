@@ -107,3 +107,67 @@ async def test_presence_loop_flags_replayed_events(monkeypatch):
     assert seen == [("hello", False), ("presence", True), ("store", True), ("presence", False), ("heartbeat", False)]
     assert memory.current.state == "UNKNOWN"
     assert len(memory.history) == 2 and memory.identity_count == 2
+
+
+def test_describe_includes_hedged_mood():
+    memory = PresenceMemory()
+    memory.apply_hello({"presence": {"state": "KNOWN", "display_name": "Ben", "identity_id": "a", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}})
+    assert memory.current.mood == "Happiness" and memory.current.valence == 0.6
+    de = memory.describe(T0, language="de")
+    assert "wirkt fröhlich" in de and "Valenz +0.6" in de and "Erregung +0.1" in de
+    assert "ist fröhlich" not in de and "erkannt" not in de.split("wirkt")[1]
+    en = memory.describe(T0)  # the situation report itself is English; default clause language follows
+    assert "looks happy" in en and "valence +0.6" in en and "arousal +0.1" in en
+    assert "is happy" not in en
+    assert "keine Tatsache" in de and "not a fact" in en
+
+
+def test_mood_event_updates_current_mood_and_null_ends_it_without_touching_situation():
+    memory = PresenceMemory()
+    memory.apply_hello({"presence": {"state": "UNKNOWN", "faces": 1}, "last_sequence": 0})
+    key = memory.situation_key()
+    memory.apply_mood({"sequence": 1, "identity_id": None, "from_mood": None, "to_mood": "Sadness", "valence": -0.4, "arousal": -0.2})
+    assert memory.current.mood == "Sadness" and memory.current.valence == -0.4 and memory.current.arousal == -0.2
+    assert memory.situation_key() == key  # mood never triggers an instruction refresh or a greeting
+    assert "wirkt traurig" in memory.describe(T0, language="de") and "Valenz -0.4" in memory.describe(T0, language="de")
+    memory.apply_mood({"sequence": 2, "from_mood": "Sadness", "to_mood": "Boredom"})  # unknown label: hedged, never raises
+    assert "wirkt boredom" in memory.describe(T0, language="de") and "Valenz" not in memory.describe(T0, language="de")
+    memory.apply_mood({"sequence": 3, "from_mood": "Boredom", "to_mood": None})
+    assert memory.current.mood is None and memory.current.valence is None and memory.current.arousal is None
+    assert "wirkt" not in memory.describe(T0, language="de") and "looks" not in memory.describe(T0)
+
+
+def test_presence_transition_starts_a_fresh_presence_without_mood():
+    memory = PresenceMemory()
+    memory.apply_hello({"presence": {"state": "KNOWN", "display_name": "Ben", "identity_id": "a", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}})
+    memory.apply_transition(Transition.from_payload({"at": T0.isoformat(), "from_state": "KNOWN", "to_state": "NO_FACE", "faces": 0}))
+    assert memory.current.mood is None and memory.current.valence is None
+    assert "wirkt" not in memory.describe(T0, language="de")
+    memory.apply_heartbeat({"presence": {"state": "KNOWN", "display_name": "Ben", "identity_id": "a", "mood": "Surprise", "valence": 0.2, "arousal": 0.7}})
+    assert memory.current.mood == "Surprise"  # heartbeat snapshots carry the mood too
+
+
+async def test_presence_loop_dispatches_mood_events():
+    from face2ai_agent import presence as mod
+
+    frames = [
+        mod.SseFrame("hello", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada"}, "last_sequence": 1}),
+        mod.SseFrame("mood", {"sequence": 1, "identity_id": "a", "display_name": "Ada", "from_mood": None, "to_mood": "Neutral", "valence": 0.0, "arousal": 0.0}, "1"),
+        mod.SseFrame("mood", {"sequence": 2, "identity_id": "a", "display_name": "Ada", "from_mood": "Neutral", "to_mood": "Happiness", "valence": 0.6, "arousal": 0.1}, "2"),
+    ]
+
+    class FakeClient:
+        async def frames(self):
+            for f in frames:
+                yield f
+
+    seen = []
+
+    async def on_event(kind, payload, replayed):
+        seen.append((kind, replayed))
+
+    memory = mod.PresenceMemory()
+    await mod.run_presence_loop(FakeClient(), memory, on_event)
+    assert seen == [("hello", False), ("mood", True), ("mood", False)]
+    assert memory.current.mood == "Happiness" and memory.current.state == "KNOWN"
+    assert len(memory.history) == 0  # a mood is not a presence transition

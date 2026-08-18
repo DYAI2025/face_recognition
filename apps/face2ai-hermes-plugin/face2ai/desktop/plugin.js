@@ -2,7 +2,8 @@
 // Plain ESM, no build step (JSX not allowed): renders a status-bar chip and a pane that show
 // who is in front of the local camera, fed by the plugin's own backend namespace
 // (`ctx.rest('/presence')` → /api/plugins/face2ai/presence, `ctx.socket('/events')` as accelerator).
-// Nothing biometric ever reaches this UI — Face2AI's stream carries states, names, counts, timestamps.
+// Nothing biometric ever reaches this UI — Face2AI's stream carries states, names, counts, timestamps
+// and a hedged mood hint ("wirkt …" — a best-effort guess from facial expression, never a fact).
 import { PALETTE_AREA, PANES_AREA, STATUSBAR_AREAS, haptic } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
@@ -34,8 +35,12 @@ function onFrame(frame) {
   if (event === 'hello' || event === 'heartbeat') {
     if (data && data.presence) latest = { ...latest, source: 'live', presence: data.presence, connected: true }
   } else if (event === 'presence' && data) {
+    // A transition starts a fresh, mood-less presence (the mood that ended arrives as its own `mood` frame).
     latest = { ...latest, source: 'live', connected: true, presence: { state: data.to_state, identity_id: data.identity_id, display_name: data.display_name, faces: data.faces, since: data.at, stale: false } }
     history = [...history.slice(-29), data]
+  } else if (event === 'mood' && data) {
+    // Hint began/changed/ended (`to_mood: null`); never a transition, never a reaction.
+    latest = { ...latest, presence: { ...(latest.presence || {}), mood: data.to_mood ?? null, valence: data.valence ?? null, arousal: data.arousal ?? null } }
   } else if (event === 'lost') {
     latest = { ...latest, connected: false, source: 'lost', error: data && data.error }
   }
@@ -62,6 +67,22 @@ const TONE_CLASS = {
   ok: 'text-(--ui-accent, #82f3d4)',
   warn: 'text-(--ui-warning, #f4ce8a)',
   muted: 'text-(--ui-text-tertiary)',
+}
+
+// Hedged mood wording — same literal table as Face2AI's UI (model.js) and the gateway half (presence.py).
+const MOOD_LABELS = { Happiness: 'fröhlich', Sadness: 'traurig', Anger: 'verärgert', Fear: 'ängstlich', Surprise: 'überrascht', Disgust: 'angewidert', Contempt: 'abschätzig', Neutral: 'neutral' }
+
+function fmtAxis(value) {
+  return Number.isFinite(value) ? (value >= 0 ? '+' : '') + value.toFixed(1) : null
+}
+
+/** "wirkt fröhlich (Valenz +0.6, Erregung +0.1)" or '' when there is no mood; unknown labels stay hedged. */
+function moodLabel(presence) {
+  const p = presence || {}
+  if (typeof p.mood !== 'string' || !p.mood) return ''
+  const word = Object.hasOwn(MOOD_LABELS, p.mood) ? MOOD_LABELS[p.mood] : p.mood.toLowerCase()
+  const parts = [['Valenz', fmtAxis(p.valence)], ['Erregung', fmtAxis(p.arousal)]].filter(([, v]) => v !== null).map(([k, v]) => `${k} ${v}`)
+  return `wirkt ${word}${parts.length ? ` (${parts.join(', ')})` : ''}`
 }
 
 function labelFor(presence, lang = 'de') {
@@ -113,6 +134,7 @@ function Pane() {
         children: [
           jsx('div', { className: `text-2xl font-semibold ${TONE_CLASS[tone]}`, children: text }),
           jsx('div', { className: 'text-(--ui-text-tertiary)', children: `${p.state || 'NO_SIGNAL'} · ${p.faces || 0} ${p.faces === 1 ? 'Gesicht' : 'Gesichter'}${p.since ? ' · seit ' + fmtTime(p.since) : ''}${p.stale ? ' · keine frischen Frames' : ''}` }),
+          moodLabel(p) ? jsx('div', { className: 'text-[0.75rem] text-(--ui-text-tertiary)', title: 'Vermutung aus dem Gesichtsausdruck, keine Tatsache', children: moodLabel(p) }) : null,
         ],
       }),
       current.error ? jsx('div', { className: 'text-[0.75rem] text-(--ui-warning, #f4ce8a)', children: String(current.error) }) : null,

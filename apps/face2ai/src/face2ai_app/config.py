@@ -4,6 +4,24 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean env var; unset/empty -> default, anything but true/false spellings fails visibly."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value == "":
+        return default
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    raise ValueError(f"{name} must be a boolean (true/false), got {raw!r}")
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -18,7 +36,7 @@ class Settings:
     events_heartbeat_seconds: float = 15.0
     events_buffer_size: int = 200
     expression_enabled: bool = False
-    expression_models_dir: Path = Path.home() / ".face2ai" / "models"
+    expression_models_dir: Path = Path.home() / ".face2ai" / "models"  # == default data_dir / "models"
     mood_stable_ticks: int = 3
     mood_min_score: float = 0.5
 
@@ -42,20 +60,21 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        data_dir = Path(os.getenv("FACE2AI_DATA_DIR", str(Path.home() / ".face2ai"))).expanduser()
         return cls(
             host=os.getenv("FACE2AI_HOST", "127.0.0.1"),
             port=int(os.getenv("FACE2AI_PORT", "8765")),
             match_tolerance=float(os.getenv("FACE2AI_MATCH_TOLERANCE", "0.6")),
             max_frame_bytes=int(os.getenv("FACE2AI_MAX_FRAME_BYTES", str(5 * 1024 * 1024))),
-            data_dir=Path(os.getenv("FACE2AI_DATA_DIR", str(Path.home() / ".face2ai"))).expanduser(),
+            data_dir=data_dir,
             greeting_cooldown_seconds=int(os.getenv("FACE2AI_GREETING_COOLDOWN_SECONDS", "15")),
             presence_stable_ticks=int(os.getenv("FACE2AI_PRESENCE_STABLE_TICKS", "2")),
             presence_stale_seconds=float(os.getenv("FACE2AI_PRESENCE_STALE_SECONDS", "5")),
             events_heartbeat_seconds=float(os.getenv("FACE2AI_EVENTS_HEARTBEAT_SECONDS", "15")),
             events_buffer_size=int(os.getenv("FACE2AI_EVENTS_BUFFER_SIZE", "200")),
-            expression_enabled=os.getenv("FACE2AI_EXPRESSION_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+            expression_enabled=_env_bool("FACE2AI_EXPRESSION_ENABLED", False),
             expression_models_dir=Path(
-                os.getenv("FACE2AI_EXPRESSION_MODELS_DIR", str(Path.home() / ".face2ai" / "models"))
+                os.getenv("FACE2AI_EXPRESSION_MODELS_DIR", str(data_dir / "models"))
             ).expanduser(),
             mood_stable_ticks=int(os.getenv("FACE2AI_MOOD_STABLE_TICKS", "3")),
             mood_min_score=float(os.getenv("FACE2AI_MOOD_MIN_SCORE", "0.5")),

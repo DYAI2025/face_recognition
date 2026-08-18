@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
 
 Encoding = list[float]
+UnitScore = Annotated[float, Field(ge=0.0, le=1.0)]
 
 
 class RecognitionState(StrEnum):
@@ -42,17 +43,17 @@ class Expression(BaseModel):
     """
 
     dominant: str
-    scores: dict[str, float] = Field(default_factory=dict)
+    scores: dict[str, UnitScore] = Field(default_factory=dict)
     valence: float | None = Field(default=None, ge=-1.0, le=1.0)
     arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
-    blendshapes: dict[str, float] = Field(default_factory=dict)  # only entries >= 0.2, rounded to 2 decimals
+    blendshapes: dict[str, UnitScore] = Field(default_factory=dict)  # only entries >= 0.2, rounded to 2 decimals
     yaw: float | None = None
     pitch: float | None = None
     roll: float | None = None
 
     @field_validator("scores")
     @classmethod
-    def _known_labels(cls, value: dict[str, float]) -> dict[str, float]:
+    def _known_labels(cls, value: dict[str, UnitScore]) -> dict[str, UnitScore]:
         unknown = set(value) - set(EMOTIONS)
         if unknown:
             raise ValueError(f"unknown emotion labels: {sorted(unknown)}")
@@ -138,8 +139,8 @@ class Presence(BaseModel):
     observed_at: datetime | None = None
     stale: bool = False
     mood: str | None = None
-    valence: float | None = None
-    arousal: float | None = None
+    valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+    arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
 
 
 class PresenceTransition(BaseModel):
@@ -152,8 +153,8 @@ class PresenceTransition(BaseModel):
     display_name: str | None = None
     faces: int = 0
     mood: str | None = None
-    valence: float | None = None
-    arousal: float | None = None
+    valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+    arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
 
 
 class StoreEventKind(StrEnum):

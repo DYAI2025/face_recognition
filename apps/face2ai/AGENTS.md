@@ -7,14 +7,18 @@ Preserve the shortest real product loop: `UNKNOWN -> explicit LEARN -> leave -> 
 ## Architecture rules
 
 - Do not modify the upstream `face_recognition/` package for Face2AI product features unless a separate ADR explicitly requires it.
-- `domain/` must not import FastAPI, browser code, storage adapters, or `face_recognition`.
-- Third-party recognition belongs behind `RecognitionEngine`.
+- `domain/` must not import FastAPI, browser code, storage adapters, `face_recognition`, `mediapipe` or `emotiefflib`.
+- Third-party recognition belongs behind `RecognitionEngine`; third-party expression/affect models belong behind `ExpressionEngine` (`ports/expression.py`, ADR-003) — new adapters implement that port, they are never wired into matching.
 - Persistence belongs behind `IdentityStore`.
 - HTTP belongs in `api/`; browser behavior belongs in `static/` (ES modules, no build step; visual rules in `docs/UI_DIRECTION.md`).
 - Browser view logic that needs no DOM lives in `static/js/model.js` and is covered by `tests/js/*.test.mjs` (`node --test`).
 - New Party Mirror or agent behavior must consume identity/recognition events instead of being inserted into face matching. The event surface is `services/presence.py` (`PresenceTracker`, debounced transitions) + `services/events.py` (`IdentityEventBroker`) exposed as `GET /api/events` (SSE) and `GET /api/presence`; it carries states, names, counts and timestamps only — never frames, boxes or encodings (a test enforces this).
 - The Hermes plugin lives in `apps/face2ai-hermes-plugin/` (Python half + dashboard API for the Hermes host, desktop half for the Mac); it consumes the same event stream.
 - The voice agent lives in `apps/face2ai-agent/` (LiveKit Agents, own uv project, ADR-002). It subscribes with `?role=agent`; while it is connected the browser leaves the spoken greeting to it (`SystemStatus.agent_connected`).
+- Expression (ADR-003) is a **hint, never a fact, never a gate**: it may decorate observations (`faces[].expression`), presence (`Presence.mood/valence/arousal`) and the stream (SSE `mood`), but it must never influence matching, enrollment, presence transitions, the greeting or any other decision. It is opt-in (`POST /api/expression`, default off) and nothing about it is persisted.
+- Expression wording is hedged everywhere: browser (English) "looks happy", agent and Hermes plugin (German) "wirkt fröhlich" — never "is happy", "ist fröhlich", "erkannt" or "detected" for a mood. `tests/test_static.py` enforces this for the served bundle; keep those tests green and extend them when wording moves.
+- The expression wire may carry labels, scores, valence/arousal, named blendshape floats and head-pose angles; it must never carry landmarks, crops, pixels or embeddings (`domain.Expression` allows nothing else — do not widen it).
+- Browser "Mood" event-stream entries are a debounced view (`model.trackMood`) of per-frame hints; the wire mood is the server's `MoodTracker` (`services/mood.py`). Do not make the browser publish or re-derive the wire mood.
 - Do not persist raw camera frames by default.
 - Do not represent face distance as a confidence percentage.
 - The browser consumes `RecognitionEvent.can_enroll` / `message` and `SystemStatus.engine_available`; it never re-derives recognition state or engine readiness client-side.

@@ -19,6 +19,7 @@ The visual system reacts to real product state as reported by the API:
 - `MULTIPLE_FACES` -> no enrollment affordance, server `message` shown verbatim;
 - engine unavailable (`engine_available:false` or HTTP 503) -> explicit offline state with the server's reason, never synthetic fallback data;
 - API errors -> the server's `detail` text is surfaced (toast, form error, event stream), never collapsed into a generic state.
+- expression (opt-in, ADR-003) -> an "Expression" metric tile that starts as `off` and stays honest: while exactly one face is in frame it shows the server's per-frame hint as a hedged English phrase ("looks happy", "looks neutral"), valence/arousal as two small bars, and the caption "a hint, not a fact"; with no face, several faces or an unreadable face it shows `—`, toggled off it shows `off`; the toggle button ("Expression: off/on", `aria-pressed`) is disabled with the server's `expression_reason` in its title until `/api/status` says the engine is available, and its label follows `/api/status`, never the click. Tone: mint for a pleasant hint, neutral for neutral/surprise, amber for the rest — never red, expression is not an error state.
 
 ## Enrollment
 
@@ -50,7 +51,7 @@ Implemented in `static/js/effects.js` and `static/css/app.css`; all off under `p
 - Camera stage owns most of the viewport.
 - Identity rail overlaps the stage slightly to break strict dashboard symmetry.
 - Panels use different corner geometry and small positional offsets instead of a perfect card grid.
-- Event stream sits below the camera as a secondary evidence layer: only real camera, recognition, greeting, enrollment and store events.
+- Event stream sits below the camera as a secondary evidence layer: only real camera, recognition, greeting, enrollment, store and mood events. "Mood" entries are debounced (`model.trackMood`: a hedged label is logged once it held for 3 frames and differs from the last logged one; 3 frames without a label end it) and hedged ("Ben looks happy."); per-frame flicker never reaches the log.
 - Product controls are contextual; unavailable actions stay disabled instead of pretending to work.
 
 ## State palette
@@ -72,4 +73,5 @@ Implemented in `static/js/effects.js` and `static/css/app.css`; all off under `p
 - Camera frames are not persisted by the UI; the capture canvas is transient.
 - No synthetic identity events are emitted by the UI.
 - Match distance is shown as a distance (3 decimals), never as a confidence percentage.
+- Expression is shown as a hedged appearance ("looks …") with the caption "a hint, not a fact"; never as "is …", never as "detected", never with a certainty percentage (`tests/test_static.py` enforces the wording).
 - Everything is dependency-free: no CDN, fonts, frameworks or build step (ADR-001).

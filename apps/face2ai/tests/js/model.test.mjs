@@ -3,14 +3,17 @@ import { test } from 'node:test';
 
 import {
   axisPercent,
+  describeAction,
   describeCameraError,
   describeEvent,
   describeExpression,
   formatAxis,
+  formatDuration,
   offlineView,
   projectBox,
+  pushSample,
   shouldGreet,
-  trackMood,
+  sparklinePoints,
   transitionKey,
 } from '../../src/face2ai_app/static/js/model.js';
 
@@ -207,36 +210,54 @@ test('axisPercent maps -1..1 onto 0..100 and clamps', () => {
   assert.equal(axisPercent(NaN), null);
 });
 
-test('trackMood logs a hedged label only once it held for stableTicks frames and only when it changes', () => {
-  let t = trackMood(null, 'wirkt fröhlich', 3);
-  assert.equal(t.log, null); // 1st frame: not yet stable
-  t = trackMood(t, 'wirkt fröhlich', 3);
-  assert.equal(t.log, null);
-  t = trackMood(t, 'wirkt fröhlich', 3);
-  assert.equal(t.log, 'wirkt fröhlich'); // 3rd consecutive frame: log once
-  t = trackMood(t, 'wirkt fröhlich', 3);
-  assert.equal(t.log, null); // same label: no repeat
-  t = trackMood(t, 'wirkt traurig', 3);
-  t = trackMood(t, 'wirkt fröhlich', 3); // flicker resets the streak
-  t = trackMood(t, 'wirkt traurig', 3);
-  t = trackMood(t, 'wirkt traurig', 3);
-  assert.equal(t.log, null);
-  t = trackMood(t, 'wirkt traurig', 3);
-  assert.equal(t.log, 'wirkt traurig');
+// ---------- expression dynamics (Stage 2): action entries come from the server's SSE `action` events ----------
+
+test('describeAction is hedged, quantised and bilingual', () => {
+  const brief = describeAction({ action: 'smile', duration_ms: 900, peak: 0.9 }, 'en');
+  assert.equal(brief.label, 'brief smile (0.9 s)');
+  assert.equal(brief.tone, 'muted');
+  assert.equal(brief.duration, '0.9 s');
+  assert.equal(describeAction({ action: 'brow_raise', duration_ms: 2300 }, 'en').label, 'brow raise (2.3 s)');
+  assert.equal(describeAction({ action: 'smile', duration_ms: 6000 }, 'en').label, 'held smile (6.0 s)');
+  assert.equal(describeAction({ action: 'smile', duration_ms: 900 }, 'de').label, 'kurzes Lächeln (0.9 s)');
+  assert.equal(describeAction({ action: 'smile', duration_ms: 6000 }, 'de').label, 'anhaltendes Lächeln (6.0 s)');
+  assert.equal(describeAction({ action: 'wink', duration_ms: 900 }, 'en').label, 'brief wink (0.9 s)'); // unknown label never throws
+  assert.equal(describeAction({ action: 'lip_press', duration_ms: 1200 }, 'fr').label, 'Lippen gepresst (1.2 s)'); // unknown language falls back to German
+  assert.equal(describeAction(null, 'en'), null);
+  assert.equal(describeAction({}, 'en'), null);
+  assert.equal(describeAction({ action: 42 }, 'en'), null);
 });
 
-test('trackMood forgets the logged mood after stableTicks frames without a label so a returning mood logs again', () => {
-  let t = trackMood(null, 'wirkt fröhlich', 2);
-  t = trackMood(t, 'wirkt fröhlich', 2);
-  assert.equal(t.log, 'wirkt fröhlich');
-  t = trackMood(t, null, 2);
-  assert.equal(t.log, null);
-  t = trackMood(t, 'wirkt fröhlich', 2);
-  t = trackMood(t, 'wirkt fröhlich', 2);
-  assert.equal(t.log, null); // one missing frame is flicker, not a mood end
-  t = trackMood(t, null, 2);
-  t = trackMood(t, null, 2); // stableTicks missing frames: mood ended
-  t = trackMood(t, 'wirkt fröhlich', 2);
-  t = trackMood(t, 'wirkt fröhlich', 2);
-  assert.equal(t.log, 'wirkt fröhlich');
+test('describeAction never reads as a finding: every action label in both languages is free of "is"/"detected"', () => {
+  for (const lang of ['de', 'en']) {
+    for (const action of ['smile', 'frown', 'brow_raise', 'brow_furrow', 'eye_squint', 'eyes_wide', 'nose_wrinkle', 'lip_press']) {
+      for (const duration_ms of [400, 2000, 7000]) {
+        const { label } = describeAction({ action, duration_ms }, lang);
+        assert.doesNotMatch(label, /\b(is|ist|erkannt|detected|recognized|smiling|frowning)\b/, `${lang} ${action}: ${label}`);
+        assert.match(label, /\(\d+\.\d s\)$/, label);
+      }
+    }
+  }
+});
+
+test('formatDuration prints one decimal in seconds and tolerates junk', () => {
+  assert.equal(formatDuration(900), '0.9 s');
+  assert.equal(formatDuration(6000), '6.0 s');
+  assert.equal(formatDuration(0), '0.0 s');
+  assert.equal(formatDuration(1250), '1.3 s');
+  assert.equal(formatDuration(-5), '0.0 s');
+  assert.equal(formatDuration(null), '0.0 s');
+  assert.equal(formatDuration('x'), '0.0 s');
+});
+
+test('sparkline maps -1..1 samples into the box, newest right', () => {
+  const s = pushSample([], 0, 1); pushSample(s, 1, 2); pushSample(s, -1, 3);
+  assert.equal(sparklinePoints(s, 120, 24), '0,12 60,0 120,24');
+  assert.equal(sparklinePoints([], 120, 24), '');
+  assert.equal(sparklinePoints([{ v: 0.5, at: 1 }], 120, 24), '0,6'); // a single sample sits at the left edge, never NaN
+  assert.equal(sparklinePoints([{ v: 3, at: 1 }, { v: -3, at: 2 }], 120, 24), '0,0 120,24'); // clamped
+  assert.equal(pushSample(Array.from({ length: 120 }, (_, i) => ({ v: 0, at: i })), 0.5, 999, 120).length, 120); // bounded
+  const bounded = pushSample(Array.from({ length: 3 }, (_, i) => ({ v: 0, at: i })), 0.5, 99, 3);
+  assert.deepEqual(bounded, [{ v: 0, at: 1 }, { v: 0, at: 2 }, { v: 0.5, at: 99 }]); // drops the oldest, keeps the newest
+  assert.equal(pushSample([], NaN, 1).length, 0); // a non-number is not a sample
 });

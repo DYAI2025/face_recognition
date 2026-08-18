@@ -4,13 +4,14 @@
 import * as api from './api.js';
 import { CameraController } from './camera.js';
 import { decryptText, installAtmosphere, installMagnets, installSpotlights } from './effects.js';
-import { axisPercent, describeCameraError, describeEvent, describeExpression, formatAxis, offlineView, shouldGreet, trackMood, transitionKey } from './model.js';
+import { subscribeEvents } from './events.js';
+import { axisPercent, describeAction, describeCameraError, describeEvent, describeExpression, formatAxis, offlineView, pushSample, shouldGreet, sparklinePoints, transitionKey } from './model.js';
 
 const RECOGNIZE_INTERVAL_MS = 450;
 const RECOGNIZE_ERROR_BACKOFF_MS = 1500;
 const STATUS_INTERVAL_MS = 5000;
-const MAX_EVENTS = 8;
-const MOOD_STABLE_TICKS = 3;   // frames a hedged label must hold before it is logged (matches the server's mood default)
+const MAX_EVENTS = 8;          // mood + action entries arrive from the server stream too (actions can be frequent); no browser-side debounce beyond the server's
+const AFFECT_SAMPLES = 120;    // valence samples kept for the tile sparkline (~70 s at the ~1.7 fps loop), from this page's own frames only
 const EXPRESSION_LANG = 'en';  // wording table in model.js; the shell is English, so the tile says "looks …" (hedged, never a fact)
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
@@ -38,7 +39,8 @@ const state = {
   enrollEvent: null,
   agentConnected: false, // a voice agent subscribes to /api/events; it then owns the spoken greeting
   expression: { available: false, reason: null, enabled: false }, // opt-in mood hints (Stage 1), mirrored from /api/status
-  mood: null,            // trackMood state: which hedged label was last logged to the event stream
+  affect: [],            // valence samples from this page's own frames → tile sparkline (Stage 2); mood/action log entries come from the server stream
+  eventsWarned: false,   // "Live events unavailable" is logged once; EventSource keeps reconnecting on its own
 };
 
 const IDLE_VIEW = describeEvent({ state: 'NO_FACE' });
@@ -138,14 +140,24 @@ function renderExpression(event) {
   } else {
     setExpressionTile(described.label, described.tone, described);
   }
-  // Event stream: only stable label changes, kept apart from the presence transitionKey.
-  state.mood = trackMood(state.mood, described?.label ?? null, MOOD_STABLE_TICKS);
-  if (state.mood.log) addEvent('Mood', `${faces[0]?.display_name || 'someone'} ${state.mood.log}.`);
+  // Sparkline: this page's own valence readings, newest right; frames without a reading leave a gap in time, not a point.
+  // Mood / action entries for the event stream are NOT derived here — they arrive from the server stream (see subscribeEvents below).
+  if (Number.isFinite(described?.valence)) {
+    pushSample(state.affect, described.valence, Date.now(), AFFECT_SAMPLES);
+    renderSparkline();
+  }
 }
 
-/** Nothing being recognized right now (camera off, paused, error): the tile shows no reading and the mood log restarts. */
+/** Tile sparkline from `state.affect`; hidden until there are at least two samples to draw a line between. */
+function renderSparkline() {
+  els.valenceLine.setAttribute('points', sparklinePoints(state.affect, 120, 24));
+  els.valenceSpark.hidden = state.affect.length < 2;
+}
+
+/** Nothing being recognized right now (camera off, paused, error, toggle): the tile shows no reading and the sparkline restarts. */
 function clearExpression() {
-  state.mood = null;
+  state.affect = [];
+  renderSparkline();
   setExpressionTile(state.expression.enabled ? '—' : 'off', 'muted');
 }
 
@@ -630,3 +642,26 @@ renderIdentity(offlineView());
 setLoopIndicator();
 await refreshStatus();
 setInterval(refreshStatus, STATUS_INTERVAL_MS);
+
+// Live event stream (same origin): mood and action entries come from the server — the MoodTracker's hysteresis
+// and the ActionTracker's onset/apex/offset are the single source of truth, so nothing is re-derived or debounced
+// here. Entries are logged only while expression is on (state mirrors /api/status); wording stays hedged
+// ("Ben looks happy.", "Ben: brief smile (0.9 s)") — a hint, never a fact, and nothing in the shell gates on it.
+subscribeEvents({
+  onMood: (t) => {
+    if (!state.expression.enabled || !t?.to_mood) return; // to_mood null = the mood ended; nothing to say
+    const described = describeExpression({ dominant: t.to_mood, scores: {} }, EXPRESSION_LANG);
+    if (described) addEvent('Mood', `${t.display_name || 'someone'} ${described.label}.`);
+  },
+  onAction: (a) => {
+    if (!state.expression.enabled) return;
+    const described = describeAction(a, EXPRESSION_LANG);
+    if (described) addEvent('Expression', `${a.display_name || 'someone'}: ${described.label}`);
+  },
+  onError: () => {
+    // EventSource retries by itself; say so once instead of flooding the log on every attempt.
+    if (state.eventsWarned) return;
+    state.eventsWarned = true;
+    addEvent('Live events unavailable', 'Mood and expression entries pause until the stream reconnects.');
+  },
+});

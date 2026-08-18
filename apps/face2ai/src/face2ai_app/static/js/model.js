@@ -146,20 +146,71 @@ export function formatAxis(value) {
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
 }
 
+// ---------- expression dynamics (Stage 2): action entries + valence sparkline ----------
+
 /**
- * Event-stream policy for mood entries. Per-frame hints flicker; the log is an evidence layer,
- * so a hedged label is logged only once it has held for `stableTicks` consecutive frames and
- * differs from the last logged one. `stableTicks` frames without a label end the mood, so the
- * same mood logs again when it returns (mirrors the server-side MoodTracker's reset).
- * Returns the next tracker plus `log` (the label to log, or null). Start with `trackMood(null, …)`.
+ * Wording tables for `ActionEvent.action` (see domain/models.py ACTIONS). An action is a description of
+ * a movement ("brief smile (0.9 s)"), never a claim about the person and never a finding. Timing is
+ * quantized to the frame rate (~0.6 s), hence "brief" ≤ 1 s and "held" ≥ 5 s rather than any
+ * sub-second vocabulary (which the loop cannot resolve). Both languages stay here so the view-model is bilingual; app.js picks
+ * English (`EXPRESSION_LANG`).
  */
-export function trackMood(prev, label, stableTicks = 3) {
-  const t = prev || { candidate: null, streak: 0, missing: 0, logged: null };
-  if (!label) {
-    const missing = t.missing + 1;
-    return { candidate: null, streak: 0, missing, logged: missing >= stableTicks ? null : t.logged, log: null };
-  }
-  const streak = label === t.candidate ? t.streak + 1 : 1;
-  const log = streak >= stableTicks && label !== t.logged ? label : null;
-  return { candidate: label, streak, missing: 0, logged: log || t.logged, log };
+const ACTION_WORDS = Object.freeze({
+  en: Object.freeze({
+    brief: 'brief ',
+    held: 'held ',
+    labels: Object.freeze({ smile: 'smile', frown: 'frown', brow_raise: 'brow raise', brow_furrow: 'brow furrow', eye_squint: 'eye squint', eyes_wide: 'eyes wide', nose_wrinkle: 'nose wrinkle', lip_press: 'lip press' }),
+  }),
+  de: Object.freeze({
+    brief: 'kurzes ',
+    held: 'anhaltendes ',
+    labels: Object.freeze({ smile: 'Lächeln', frown: 'Mundwinkel runter', brow_raise: 'Brauen hoch', brow_furrow: 'Stirnrunzeln', eye_squint: 'Augen zusammengekniffen', eyes_wide: 'Augen weit', nose_wrinkle: 'Nasenrümpfen', lip_press: 'Lippen gepresst' }),
+  }),
+});
+const ACTION_BRIEF_MS = 1000;
+const ACTION_HELD_MS = 5000;
+
+/** "0.9 s" — one decimal; anything that is not a finite non-negative number reads as 0.0 s. */
+export function formatDuration(ms) {
+  const n = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  return `${(n / 1000).toFixed(1)} s`;
+}
+
+/**
+ * Turn an SSE `action` payload into `{ label, tone, duration }` — or null when there is nothing to say.
+ * Unknown actions are hedged the same way (raw name, `_` → space) and never throw; unknown languages fall back to German.
+ */
+export function describeAction(action, lang = 'de') {
+  const name = typeof action?.action === 'string' ? action.action : '';
+  if (!name) return null;
+  const words = ACTION_WORDS[lang] || ACTION_WORDS.de;
+  const word = Object.hasOwn(words.labels, name) ? words.labels[name] : name.toLowerCase().replace(/_/g, ' ');
+  const ms = Number.isFinite(action.duration_ms) ? action.duration_ms : 0;
+  const qualifier = ms <= ACTION_BRIEF_MS ? words.brief : ms >= ACTION_HELD_MS ? words.held : '';
+  const duration = formatDuration(ms);
+  return { label: `${qualifier}${word} (${duration})`, tone: 'muted', duration };
+}
+
+/**
+ * Append a valence sample `{ v, at }` from the browser's own frames, bounded to `max` (oldest dropped).
+ * Mutates and returns `samples`; a non-number is ignored. This is a view of what the page itself sent —
+ * it never re-derives the server's affect history.
+ */
+export function pushSample(samples, value, at, max = 120) {
+  if (!Number.isFinite(value)) return samples;
+  samples.push({ v: value, at });
+  while (samples.length > max) samples.shift();
+  return samples;
+}
+
+/** SVG polyline `points` for samples in a `w`×`h` box: -1..1 clamped, +1 at the top, newest at the right; '' when empty. */
+export function sparklinePoints(samples, w, h) {
+  const n = samples.length;
+  if (!n) return '';
+  const round = (x) => String(Math.round(x * 10) / 10);
+  return samples.map((s, i) => {
+    const x = n === 1 ? 0 : (i / (n - 1)) * w;
+    const y = ((1 - Math.min(1, Math.max(-1, s.v))) / 2) * h;
+    return `${round(x)},${round(y)}`;
+  }).join(' ');
 }

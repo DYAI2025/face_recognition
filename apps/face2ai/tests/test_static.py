@@ -175,3 +175,64 @@ def test_shell_and_assets_must_be_revalidated_by_the_browser(client):
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-cache", path
         assert "etag" in response.headers, path
+
+
+# ---------- expression dynamics (Stage 2): server-fed mood/action entries, own-frame sparkline ----------
+
+
+def test_valence_sparkline_is_inline_svg_hidden_until_there_is_data():
+    html = INDEX.read_text(encoding="utf-8")
+    svg = re.search(r"<svg[^>]*id=\"valenceSpark\"[^>]*>", html)
+    assert svg, "expression tile has no valence sparkline"
+    tag = svg.group(0)
+    assert "hidden" in tag, "sparkline must start hidden (it needs at least two samples)"
+    assert 'role="img"' in tag and "aria-label=" in tag, "sparkline needs an accessible name"
+    assert "xmlns=" not in tag and "http" not in tag, "inline SVG must not reference any host"
+    tile = re.search(r"<div[^>]*id=\"expressionTile\"[^>]*>(.*?)</section>", html, re.S)
+    assert tile and 'id="valenceSpark"' in tile.group(1), "sparkline must live inside the expression tile"
+    assert re.search(r"<polyline[^>]*id=\"valenceLine\"", html)
+
+
+def test_browser_takes_mood_and_action_entries_from_the_server_stream():
+    """The server's MoodTracker/ActionTracker are the single source of truth; the browser only renders them.
+
+    The client-side `trackMood` debounce is gone: two consumers deriving two different moods from one
+    stream would contradict each other. events.js is a same-origin EventSource on `?role=browser`
+    (never `role=agent`, which would hand greetings to a voice agent).
+    """
+    events_js = JS_DIR / "events.js"
+    assert events_js.is_file(), "static/js/events.js missing"
+    events_text = events_js.read_text(encoding="utf-8")
+    assert "new EventSource(" in events_text
+    assert "/api/events?role=browser" in events_text
+    assert "role=agent" not in events_text
+    for kind in ("'mood'", "'action'"):
+        assert f"addEventListener({kind}" in events_text, kind
+    assert re.search(r"return \(\) => source\.close\(\)", events_text), "subscribeEvents must hand back a close()"
+    app_js = (JS_DIR / "app.js").read_text(encoding="utf-8")
+    assert re.search(r"import \{ subscribeEvents \} from '\./events\.js'", app_js)
+    assert "subscribeEvents({" in app_js
+    assert "onMood" in app_js and "onAction" in app_js and "onError" in app_js
+    assert "describeAction(" in app_js and "pushSample(" in app_js and "sparklinePoints(" in app_js
+    assert "Live events unavailable" in app_js
+    for path in _js_files():
+        assert "trackMood" not in path.read_text(encoding="utf-8"), f"{path.name}: client-side mood debounce must be gone"
+
+
+def test_action_wording_is_hedged_and_never_a_certainty(client):
+    """Actions are described as movements with a duration ("brief smile (0.9 s)"), never as a state of the person."""
+    model_js = client.get("/assets/js/model.js").text
+    for word in ("'brief '", "'held '", "'kurzes '", "'anhaltendes '", "brow_raise", "lip_press"):
+        assert word in model_js, word
+    assert "export function describeAction" in model_js
+    assert "export function formatDuration" in model_js
+    action_words = r"(smil|frown|brow|squint|eyes wide|nose wrinkl|lip press|lächel|stirnrunzel|brauen|nasenrümpf|lippen)"
+    for path in [INDEX, STATIC / "css" / "app.css", *_js_files()]:
+        text = path.read_text(encoding="utf-8").lower()
+        assert not re.search(r"\b(is|are|was|were) (smiling|frowning|squinting|wrinkling|pressing)\b", text), (
+            f"{path.name}: an action is a movement ('brief smile'), never a state ('is smiling')"
+        )
+        assert not re.search(rf"\bdetected\W+{action_words}|{action_words}\w*\W+(is |was |)detected\b", text), (
+            f"{path.name}: an action is never 'detected'"
+        )
+        assert not re.search(r"\bmicro[- ]?expression", text), f"{path.name}: ~0.6 s resolution — never call these micro-expressions"

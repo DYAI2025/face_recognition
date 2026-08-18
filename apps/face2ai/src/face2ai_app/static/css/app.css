@@ -181,6 +181,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outl
 .mood-bar-track::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(190, 219, 234, .34); }
 .mood-bar-fill { display: block; height: 100%; width: 0; border-radius: inherit; background: rgba(223, 233, 232, .72); transition: width .3s ease; }
 .mood-bar-num { text-align: right; font-variant-numeric: tabular-nums; color: #d9e5e4; letter-spacing: 0; text-transform: none; }
+/* Valence sparkline (Stage 2): the page's own last ~120 readings, +1 top / -1 bottom, newest right, dashed 0-line.
+   Neutral light stroke like the bars — a trace of readings, not a verdict; hidden until two samples exist. */
+.affect-spark { display: block; width: 100%; height: 24px; margin-top: 8px; overflow: visible; }
+.affect-spark polyline { fill: none; stroke: rgba(223, 233, 232, .72); stroke-width: 1.2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.affect-zero { stroke: rgba(190, 219, 234, .22); stroke-width: 1; stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; }
 
 .context-card { margin-right: 18px; }
 .context-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid rgba(190, 219, 234, .08); font-size: 11px; }

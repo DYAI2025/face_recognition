@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from face2ai_app.adapters.face_recognition_engine import FaceRecognitionEngine
 from face2ai_app.adapters.json_identity_store import JsonIdentityStore
@@ -32,6 +33,19 @@ def _log_engine(name: str, available: bool, reason: str | None, *, level: int = 
     else:
         logger.log(level, "%s engine unavailable: %s", name, reason or "no reason given")
 
+
+
+class RevalidatedStaticFiles(StaticFiles):
+    """Static assets that browsers must revalidate on every load (ETag/304 still applies).
+
+    Without an explicit Cache-Control the browser caches heuristically from Last-Modified, so a
+    redeployed ES-module graph can pair a fresh app.js with a stale model.js and fail on import.
+    """
+
+    async def get_response(self, path: str, scope: Scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 def create_app(*, settings: Settings | None = None, engine=None, store=None, expression=None) -> FastAPI:
     app_settings = settings or Settings.from_env()
@@ -77,11 +91,11 @@ def create_app(*, settings: Settings | None = None, engine=None, store=None, exp
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     app.include_router(router)
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
+    app.mount("/assets", RevalidatedStaticFiles(directory=STATIC_DIR), name="assets")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 

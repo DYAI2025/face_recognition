@@ -165,3 +165,13 @@ def test_expression_toggle_is_the_only_thing_the_browser_sends_for_the_feature()
     app_js = (JS_DIR / "app.js").read_text(encoding="utf-8")
     assert "api.setExpression(" in app_js
     assert "expression_available" in app_js and "expression_reason" in app_js and "expression_enabled" in app_js
+
+
+def test_shell_and_assets_must_be_revalidated_by_the_browser(client):
+    """A redeploy must never pair a fresh app.js with a heuristically cached model.js (real case, 2026-08-18)."""
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    for path in ("/assets/js/app.js", "/assets/js/model.js", "/assets/css/app.css"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache", path
+        assert "etag" in response.headers, path

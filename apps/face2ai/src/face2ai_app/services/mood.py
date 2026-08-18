@@ -31,17 +31,23 @@ def _now() -> datetime:
 class MoodTracker:
     """Turns per-frame expression scores into a stable mood with hysteresis.
 
-    Per frame the emotion scores are smoothed with an EMA (``alpha``; labels missing from a
-    frame count as 0.0). The argmax of the EMA is the *candidate*; it becomes the mood once it
-    has been the candidate for ``stable_ticks`` consecutive frames and its EMA is at least
-    ``min_score``. Only a candidate that differs from the current mood produces a transition, so
-    a committed mood survives brief flicker until another label wins the same race.
+    Per frame the emotion ``scores`` are smoothed with an EMA (``alpha``; labels missing from a
+    frame count as 0.0; ``expression.dominant`` is ignored — the EMA over scores decides). The
+    argmax of the EMA is the *candidate*; it becomes the mood once it has been the candidate for
+    ``stable_ticks`` consecutive frames and its EMA is at least ``min_score``. Only a candidate
+    that differs from the current mood produces a transition, so a committed mood survives brief
+    flicker until another label wins the same race.
 
     The tracker follows the presence it decorates: a change of ``presence_key`` (state or
     identity changed) resets the smoothing immediately and ends the current mood; ``stable_ticks``
     consecutive frames without an expression end it as well. Either produces one
-    ``mood -> None`` transition, and only if a mood was set. Frames without an expression never
-    touch the EMA or the streak; they only count towards that reset.
+    ``mood -> None`` transition, and only if a mood was set. Frames without an expression (``None``
+    or empty ``scores``) never touch the EMA or the streak; they only count towards that reset.
+
+    Valence/arousal are smoothed alongside but *frozen at commit time*: ``current()`` and the
+    transition carry the values as of the moment the mood was committed, not the live EMA. This
+    is deliberate — it keeps the wire quiet (one change per mood, not per frame); Stage 2 may add
+    live affect as its own signal.
     """
 
     def __init__(self, stable_ticks: int = 3, min_score: float = 0.5, alpha: float = 0.5) -> None:
@@ -55,19 +61,28 @@ class MoodTracker:
         self._min_score = min_score
         self._alpha = alpha
         self._lock = threading.Lock()
+        # Whose mood this is (mirrors the presence being decorated).
         self._presence_key: str | None = None
         self._identity_id: str | None = None
         self._display_name: str | None = None
+        # Committed mood (what Presence carries); valence/arousal frozen at commit time.
         self._mood: str | None = None
         self._valence: float | None = None
         self._arousal: float | None = None
+        # Smoothing state, reset by _clear_smoothing().
+        self._ema: dict[str, float] = {}
+        self._ema_valence: float | None = None
+        self._ema_arousal: float | None = None
+        self._candidate: str | None = None
+        self._candidate_count: int = 0
+        self._missing_count: int = 0
         self._clear_smoothing()
 
     def _clear_smoothing(self) -> None:
         self._ema = dict.fromkeys(EMOTIONS, 0.0)
-        self._ema_valence: float | None = None
-        self._ema_arousal: float | None = None
-        self._candidate: str | None = None
+        self._ema_valence = None
+        self._ema_arousal = None
+        self._candidate = None
         self._candidate_count = 0
         self._missing_count = 0
 
@@ -86,10 +101,8 @@ class MoodTracker:
         self._mood = self._valence = self._arousal = None
         return transition
 
-    def _smooth(self, previous: float | None, value: float | None) -> float | None:
-        """EMA step; a frame without a value leaves the estimate untouched (None until the first)."""
-        if value is None:
-            return previous
+    def _smooth(self, previous: float | None, value: float) -> float:
+        """One EMA step; an estimate that has not started yet (``None``) counts as 0.0."""
         return self._alpha * value + (1.0 - self._alpha) * (previous if previous is not None else 0.0)
 
     def observe(
@@ -111,18 +124,19 @@ class MoodTracker:
             self._identity_id = identity_id
             self._display_name = display_name
 
-            if expression is None:
+            if expression is None or not expression.scores:
                 self._missing_count += 1
-                if self._missing_count >= self._stable_ticks:
-                    ended = ended or self._clear_mood(now)
+                if self._missing_count >= self._stable_ticks and ended is None:
+                    ended = self._clear_mood(now)
                 return ended
             self._missing_count = 0
 
             for label in EMOTIONS:
-                score = expression.scores.get(label, 0.0)
-                self._ema[label] = self._alpha * score + (1.0 - self._alpha) * self._ema[label]
-            self._ema_valence = self._smooth(self._ema_valence, expression.valence)
-            self._ema_arousal = self._smooth(self._ema_arousal, expression.arousal)
+                self._ema[label] = self._smooth(self._ema[label], expression.scores.get(label, 0.0))
+            if expression.valence is not None:
+                self._ema_valence = self._smooth(self._ema_valence, expression.valence)
+            if expression.arousal is not None:
+                self._ema_arousal = self._smooth(self._ema_arousal, expression.arousal)
 
             candidate = max(EMOTIONS, key=self._ema.__getitem__)
             if candidate == self._candidate:
@@ -155,7 +169,10 @@ class MoodTracker:
         return transition
 
     def current(self) -> tuple[str | None, float | None, float | None]:
-        """``(mood, valence, arousal)`` as committed — what ``Presence`` should carry."""
+        """``(mood, valence, arousal)`` as committed — what ``Presence`` should carry.
+
+        Valence/arousal are the values frozen when the mood was committed, not the live EMA.
+        """
         with self._lock:
             return self._mood, self._valence, self._arousal
 

@@ -108,6 +108,47 @@ def test_missing_valence_and_arousal_stay_none():
     assert t.current() == ("Happiness", None, None)
 
 
+def test_key_change_and_return_needs_a_fresh_full_streak():
+    t = MoodTracker(stable_ticks=2, min_score=0.5)
+    for _ in range(2):
+        t.observe("KNOWN:a", happy(), T0)
+    assert t.current()[0] == "Happiness"
+    ended = t.observe("NO_FACE:", None, T0)  # key change ends the mood
+    assert ended is not None and (ended.from_mood, ended.to_mood) == ("Happiness", None)
+    # Same key again: EMA and streak restarted, so the first frame cannot commit ...
+    assert t.observe("KNOWN:a", happy(), T0) is None
+    assert t.current() == (None, None, None)
+    # ... only the full streak does.
+    tr = t.observe("KNOWN:a", happy(), T0)
+    assert tr is not None and (tr.from_mood, tr.to_mood) == (None, "Happiness")
+
+
+def test_candidate_flip_back_resets_the_streak():
+    t = MoodTracker(stable_ticks=3, min_score=0.5)
+    assert t.observe("KNOWN:a", happy(), T0) is None  # Happiness streak 1
+    assert t.observe("KNOWN:a", happy(), T0) is None  # Happiness streak 2
+    assert t.observe("KNOWN:a", sad(), T0) is None  # candidate flips to Sadness (streak 1)
+    assert t.observe("KNOWN:a", happy(), T0) is None  # back to Happiness: streak 1 again, not 3
+    assert t.observe("KNOWN:a", happy(), T0) is None  # streak 2
+    assert t.current() == (None, None, None)
+    tr = t.observe("KNOWN:a", happy(), T0)  # streak 3 -> commit
+    assert tr is not None and tr.to_mood == "Happiness"
+
+
+def test_expression_without_scores_counts_as_missing_frame():
+    t = MoodTracker(stable_ticks=2, min_score=0.5)
+    for _ in range(2):
+        t.observe("KNOWN:a", happy(), T0)
+    assert t.current()[0] == "Happiness"
+    blank = Expression(dominant="Anger", scores={})  # dominant is ignored; no scores = nothing to smooth
+    assert t.observe("KNOWN:a", blank, T0) is None
+    assert t.current()[0] == "Happiness"  # one missing frame keeps the mood ...
+    ended = t.observe("KNOWN:a", blank, T0)  # ... stable_ticks missing frames end it
+    assert ended is not None and (ended.from_mood, ended.to_mood) == ("Happiness", None)
+    assert t.observe("KNOWN:a", blank, T0) is None  # and "Anger" never becomes a mood
+    assert t.current() == (None, None, None)
+
+
 def test_transition_is_a_wire_model_without_biometrics():
     assert set(MoodTransition.model_fields) == {
         "at", "identity_id", "display_name", "from_mood", "to_mood", "valence", "arousal",

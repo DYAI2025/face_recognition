@@ -36,6 +36,10 @@ class PresenceTracker:
     ``expire()`` (called by the SSE heartbeat and by presence reads) turns that into an explicit
     ``X -> NO_SIGNAL`` transition; ``observe()`` applies the same rule lazily, so a person who
     leaves while the tab is hidden and comes back produces a fresh ``NO_SIGNAL -> KNOWN``.
+
+    Mood: the current presence carries the mood hint set via ``set_mood()`` (fed by the
+    ``MoodTracker``); every committed transition — including expiry and reset — starts a new
+    ``Presence`` and therefore clears it. The tracker itself never derives a mood.
     """
 
     def __init__(self, *, stable_ticks: int = 2, stale_after: timedelta = timedelta(seconds=5)) -> None:
@@ -116,6 +120,11 @@ class PresenceTracker:
             stale=False,
         )
         return transition
+
+    def set_mood(self, mood: str | None, valence: float | None, arousal: float | None) -> None:
+        """Attach (or clear, with ``None``s) the mood hint to the current presence; no transition."""
+        with self._lock:
+            self._current = self._current.model_copy(update={"mood": mood, "valence": valence, "arousal": arousal})
 
     def expire(self, now: datetime | None = None) -> PresenceTransition | None:
         """Turn a presence that received no frames for ``stale_after`` into NO_SIGNAL (or None)."""

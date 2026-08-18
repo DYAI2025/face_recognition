@@ -116,6 +116,39 @@ def test_returning_person_after_a_frame_gap_is_a_fresh_arrival():
     assert tracker.snapshot(T0 + timedelta(seconds=33)).since == T0 + timedelta(seconds=33)
 
 
+def test_set_mood_shows_in_snapshot_and_is_cleared_by_transitions():
+    tracker = PresenceTracker(stable_ticks=1, stale_after=timedelta(seconds=5))
+    tracker.observe(known("a", "Ada"), T0)
+    assert tracker.snapshot(T0).mood is None
+    tracker.set_mood("Happiness", 0.45, 0.075)
+    snap = tracker.snapshot(T0)
+    assert (snap.mood, snap.valence, snap.arousal) == ("Happiness", 0.45, 0.075)
+    assert snap.state is PresenceState.KNOWN and snap.display_name == "Ada"  # rest untouched
+    tracker.set_mood(None, None, None)
+    assert tracker.snapshot(T0).mood is None
+    # A committed presence transition belongs to a new presence: mood starts empty again.
+    tracker.set_mood("Happiness", 0.45, 0.075)
+    left = tracker.observe(no_face(), T0 + timedelta(seconds=1))
+    assert left is not None and left.to_state is PresenceState.NO_FACE
+    snap = tracker.snapshot(T0 + timedelta(seconds=1))
+    assert (snap.mood, snap.valence, snap.arousal) == (None, None, None)
+
+
+def test_expire_and_reset_clear_mood():
+    tracker = PresenceTracker(stable_ticks=1, stale_after=timedelta(seconds=5))
+    tracker.observe(known("a", "Ada"), T0)
+    tracker.set_mood("Sadness", -0.5, -0.2)
+    assert tracker.snapshot(T0).mood == "Sadness"
+    expired = tracker.expire(T0 + timedelta(seconds=7))
+    assert expired is not None and expired.to_state is PresenceState.NO_SIGNAL
+    snap = tracker.snapshot(T0 + timedelta(seconds=7))
+    assert (snap.state, snap.mood, snap.valence, snap.arousal) == (PresenceState.NO_SIGNAL, None, None, None)
+    tracker.observe(known("a", "Ada"), T0 + timedelta(seconds=8))
+    tracker.set_mood("Sadness", -0.5, -0.2)
+    assert tracker.reset(T0 + timedelta(seconds=9)) is not None
+    assert tracker.snapshot(T0 + timedelta(seconds=9)).mood is None
+
+
 def test_wire_models_carry_no_biometrics():
     from face2ai_app.domain.models import Presence, PresenceTransition
 

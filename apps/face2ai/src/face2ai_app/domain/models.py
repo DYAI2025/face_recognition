@@ -160,6 +160,22 @@ class PresenceTransition(BaseModel):
     arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
 
 
+class MoodTransition(BaseModel):
+    """Emitted once per stable mood change (SSE ``mood``). A mood is a hint ("wirkt …"), never a fact.
+
+    Wire-safe: label, names, timestamp and two rounded scalars — no per-frame scores, no blendshapes,
+    no pixels. ``to_mood`` None means the mood ended (person left, expression stopped being readable).
+    """
+
+    at: datetime
+    identity_id: str | None = None
+    display_name: str | None = None
+    from_mood: str | None
+    to_mood: str | None
+    valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+    arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
+
+
 class StoreEventKind(StrEnum):
     ENROLLED = "enrolled"
     DELETED = "deleted"

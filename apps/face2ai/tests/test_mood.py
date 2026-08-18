@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from face2ai_app.domain.models import Expression
-from face2ai_app.services.mood import MoodTracker, MoodTransition
+from face2ai_app.domain.models import Expression, MoodTransition
+from face2ai_app.services.mood import MoodTracker
 
 T0 = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
 

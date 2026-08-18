@@ -14,14 +14,18 @@ from starlette.concurrency import run_in_threadpool
 from face2ai_app import __version__
 from face2ai_app.domain.errors import EnrollmentRejected, InvalidFrame, RecognitionUnavailable
 from face2ai_app.domain.models import (
+    Expression,
     IdentitySummary,
     Presence,
+    PresenceState,
+    PresenceTransition,
     RecognitionEvent,
     StoreEvent,
     StoreEventKind,
     SystemStatus,
 )
 from face2ai_app.services.events import IdentityEvent, IdentityEventBroker
+from face2ai_app.services.mood import MoodTracker
 from face2ai_app.services.presence import PresenceTracker
 
 router = APIRouter()
@@ -40,6 +44,10 @@ def _settings(request: Request):
 
 def _presence(request: Request) -> PresenceTracker:
     return request.app.state.presence
+
+
+def _mood(request: Request) -> MoodTracker:
+    return request.app.state.mood
 
 
 def _events(request: Request) -> IdentityEventBroker:
@@ -73,9 +81,44 @@ def _publish_store_event(
     )
 
 
-def _publish_presence(request: Request, transition) -> None:
-    if transition is not None:
-        _events(request).publish("presence", transition)
+def _presence_transition(request: Request, transition: PresenceTransition | None) -> None:
+    """Publish a committed presence transition (no-op for None).
+
+    Crossing NO_SIGNAL — expiry, reset, or an arrival after a frame gap — also forgets the mood:
+    it belonged to a presence that is gone, and no further frame will announce its end. (The
+    presence itself starts fresh, without mood, on every committed transition.)
+    """
+    if transition is None:
+        return
+    if PresenceState.NO_SIGNAL in (transition.from_state, transition.to_state):
+        _mood(request).reset()
+    _events(request).publish("presence", transition)
+
+
+def _primary_expression(presence: Presence, event: RecognitionEvent) -> Expression | None:
+    """The expression the mood follows: the single face's, only while one person is stably present."""
+    if presence.state in (PresenceState.KNOWN, PresenceState.UNKNOWN) and len(event.faces) == 1:
+        return event.faces[0].expression
+    return None
+
+
+def _observe_mood(request: Request, event: RecognitionEvent, now: datetime) -> None:
+    """Feed one frame to the mood tracker under the stable presence's key; on a mood change decorate
+    the presence and publish an SSE ``mood`` event. Frames without a usable expression (expression
+    off, several faces, no face) count as missing and eventually end the mood."""
+    tracker = _presence(request)
+    presence = tracker.snapshot(now)
+    transition = _mood(request).observe(
+        f"{presence.state}:{presence.identity_id or ''}",
+        _primary_expression(presence, event),
+        now,
+        identity_id=presence.identity_id,
+        display_name=presence.display_name,
+    )
+    if transition is None:
+        return
+    tracker.set_mood(transition.to_mood, transition.valence, transition.arousal)
+    _events(request).publish("mood", transition)
 
 
 @router.get("/healthz")
@@ -138,7 +181,9 @@ async def recognize(request: Request, response: Response) -> RecognitionEvent:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except InvalidFrame as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    _publish_presence(request, _presence(request).observe(event))
+    now = datetime.now(timezone.utc)
+    _presence_transition(request, _presence(request).observe(event, now))
+    _observe_mood(request, event, now)
     response.headers[AGENT_HEADER] = "1" if _events(request).connected(EVENT_ROLE_AGENT) else "0"
     return event
 
@@ -195,14 +240,16 @@ async def delete_all_identities(request: Request) -> dict[str, int]:
 
 @router.get("/api/presence", response_model=Presence)
 async def presence(request: Request) -> Presence:
-    _publish_presence(request, _presence(request).expire())
+    _presence_transition(request, _presence(request).expire())
     return _presence(request).snapshot()
 
 
 @router.post("/api/presence/reset", response_model=Presence)
 async def reset_presence(request: Request) -> Presence:
-    """Browser stopped/paused the camera or the page is going away: presence returns to NO_SIGNAL."""
-    _publish_presence(request, _presence(request).reset())
+    """Browser stopped/paused the camera or the page is going away: presence returns to NO_SIGNAL
+    and the mood is forgotten (also when presence already was NO_SIGNAL; no event for that)."""
+    _presence_transition(request, _presence(request).reset())
+    _mood(request).reset()
     return _presence(request).snapshot()
 
 
@@ -226,7 +273,7 @@ async def events(
     after: int | None = Query(default=None, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
-    """Server-Sent Events: `hello`, then `presence` / `store` events, `heartbeat` while idle.
+    """Server-Sent Events: `hello`, then `presence` / `mood` / `store` events, `heartbeat` while idle.
 
     Consumers such as the voice agent subscribe with ``?role=agent``; the browser then knows an
     agent is present (``/api/status.agent_connected``) and leaves greetings to it. Reconnects may
@@ -243,7 +290,7 @@ async def events(
         subscription = broker.subscribe(role)
         last_sent = subscription.since_sequence
         try:
-            _publish_presence(request, tracker.expire())
+            _presence_transition(request, tracker.expire())
             yield _sse(
                 "hello",
                 {
@@ -268,7 +315,7 @@ async def events(
                 except asyncio.TimeoutError:
                     expired = tracker.expire()
                     if expired is not None:
-                        _publish_presence(request, expired)  # delivered through the queue on the next loop
+                        _presence_transition(request, expired)  # delivered through the queue on the next loop
                         continue
                     yield _sse("heartbeat", {"presence": tracker.snapshot().model_dump(mode="json")})
                     continue

@@ -3,25 +3,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
-
-from face2ai_app.domain.models import EMOTIONS, Expression
-
-
-class MoodTransition(BaseModel):
-    """Emitted once per stable mood change. A mood is a hint ("wirkt …"), never a fact.
-
-    Wire-safe: label, names, timestamp and two rounded scalars — no scores per frame, no
-    blendshapes, no pixels. (Task 6 moves this next to ``PresenceTransition`` in domain/models.)
-    """
-
-    at: datetime
-    identity_id: str | None = None
-    display_name: str | None = None
-    from_mood: str | None
-    to_mood: str | None
-    valence: float | None = Field(default=None, ge=-1.0, le=1.0)
-    arousal: float | None = Field(default=None, ge=-1.0, le=1.0)
+from face2ai_app.domain.models import EMOTIONS, Expression, MoodTransition
 
 
 def _now() -> datetime:

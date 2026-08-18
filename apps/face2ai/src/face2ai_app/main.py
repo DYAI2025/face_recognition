@@ -17,6 +17,7 @@ from face2ai_app.config import Settings
 from face2ai_app.domain.errors import IdentityStoreCorrupted
 from face2ai_app.services.events import IdentityEventBroker
 from face2ai_app.services.identity_service import IdentityService
+from face2ai_app.services.mood import MoodTracker
 from face2ai_app.services.presence import PresenceTracker
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -65,6 +66,8 @@ def create_app(*, settings: Settings | None = None, engine=None, store=None, exp
         stable_ticks=app_settings.presence_stable_ticks,
         stale_after=timedelta(seconds=app_settings.presence_stale_seconds),
     )
+    # Mood decorates the presence (a hint, never a fact); fed only while expression is enabled.
+    app.state.mood = MoodTracker(stable_ticks=app_settings.mood_stable_ticks, min_score=app_settings.mood_min_score)
     app.state.events = IdentityEventBroker(buffer_size=app_settings.events_buffer_size)
 
     @app.exception_handler(IdentityStoreCorrupted)

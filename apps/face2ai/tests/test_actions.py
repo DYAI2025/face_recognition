@@ -84,3 +84,10 @@ def test_reset_forgets_active_actions():
 def test_constructor_validation(kwargs):
     with pytest.raises(ValueError):
         ActionTracker(**kwargs)
+
+
+def test_clock_stepping_back_never_raises_and_clamps_duration():
+    t = ActionTracker(min_frames=1)
+    t.observe("K:a", smile(0.9), T0)
+    out = t.observe("K:a", smile(0.0), T0 - TICK)   # wall clock stepped back (sleep / NTP): still one event, duration clamped
+    assert len(out) == 1 and out[0].duration_ms == 0

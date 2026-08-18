@@ -52,8 +52,9 @@ class AffectHistory:
     def record_sample(self, sample: AffectSample) -> None:
         """Append one affect sample and drop leading samples older than ``max_seconds`` before it."""
         with self._lock:
+            newest = max(sample.at, self._samples[-1].at) if self._samples else sample.at
             self._samples.append(sample)
-            oldest_allowed = sample.at - self._max_age
+            oldest_allowed = newest - self._max_age  # prune against the newest seen; an out-of-order sample never un-prunes
             while self._samples and self._samples[0].at < oldest_allowed:
                 self._samples.popleft()
 

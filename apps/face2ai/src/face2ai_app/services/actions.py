@@ -65,8 +65,9 @@ class ActionTracker:
     (state or identity changed) drops whatever was active *without* an event — the offset is unknown
     and is never guessed. An unreadable frame (``expression is None``) drops active actions the same
     way. Timestamps are those of the observed frames, so onset/offset resolution equals the frame
-    interval (~0.6 s from the browser loop); ``duration_ms`` is offset - onset and therefore a
-    lower bound of the true duration by up to one frame on either side.
+    interval (~0.6 s from the browser loop); onset and offset each carry one frame of uncertainty,
+    so ``duration_ms`` (offset - onset, clamped at 0 should the wall clock step back) is accurate
+    to about +/- 1 frame. On equal peaks the first apex wins.
     """
 
     def __init__(self, on_threshold: float = 0.35, off_threshold: float = 0.2, min_frames: int = 2) -> None:
@@ -125,7 +126,7 @@ class ActionTracker:
                             apex_at=active.apex_at,
                             offset_at=now,
                             peak=round(min(active.peak, 1.0), 3),
-                            duration_ms=int((now - active.onset_at).total_seconds() * 1000),
+                            duration_ms=max(0, int((now - active.onset_at).total_seconds() * 1000)),
                             frames=active.frames,
                         )
                     )

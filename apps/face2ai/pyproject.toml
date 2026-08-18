@@ -20,6 +20,11 @@ recognition = [
   "face-recognition>=1.3,<2",
   "setuptools<82",
 ]
+expression = [
+  "mediapipe==0.10.21",
+  "emotiefflib==1.1.1",
+  "onnxruntime>=1.20,<2",
+]
 
 [dependency-groups]
 dev = [
@@ -29,6 +34,12 @@ dev = [
 
 [project.scripts]
 face2ai = "face2ai_app.main:run"
+
+[tool.uv]
+# mediapipe==0.10.21 declares numpy<2 but runs on numpy 2.3.5 (FaceLandmarker CPU delegate verified
+# on the M1, 2026-08-18: 52 blendshapes + pose matrix). Without this override the `expression`
+# extra makes the whole project unresolvable.
+override-dependencies = ["numpy==2.3.5"]
 
 [tool.uv.sources]
 face-recognition = { path = "../..", editable = true }

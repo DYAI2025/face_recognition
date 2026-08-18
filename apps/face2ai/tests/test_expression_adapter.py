@@ -1,6 +1,10 @@
-"""Pure helpers of the MediaPipe + EmotiEffLib adapter — testable without the models or the extra."""
+"""MediaPipe + EmotiEffLib adapter: pure helpers (no models, no extra needed) plus the engine's
+unavailable path — that last test may import mediapipe when the ``expression`` extra is present."""
+
+import logging
 
 import numpy as np
+import pytest
 
 from face2ai_app.adapters.mediapipe_expression import (
     MediaPipeExpressionEngine,
@@ -21,7 +25,7 @@ def test_softmax_scores_maps_logits_to_labels():
 
 def test_softmax_scores_is_numerically_stable_for_large_logits():
     scores = softmax_scores([1000, 0, 0, 0, 0, 0, 0, 0])
-    assert scores["Anger"] == 1.0 and abs(sum(scores.values()) - 1) < 1e-6
+    assert scores["Anger"] == pytest.approx(1.0) and abs(sum(scores.values()) - 1) < 1e-6
 
 
 def test_pose_from_identity_is_zero():
@@ -35,6 +39,26 @@ def test_pose_from_matrix_recovers_yaw():
     m[:3, :3] = [[np.cos(theta), 0, np.sin(theta)], [0, 1, 0], [-np.sin(theta), 0, np.cos(theta)]]
     yaw, pitch, roll = pose_from_matrix(m)
     assert (round(yaw), round(pitch), round(roll)) == (30, 0, 0)
+
+
+def test_pose_from_matrix_recovers_pitch():
+    theta = np.radians(20)
+    m = np.eye(4)
+    m[:3, :3] = [[1, 0, 0], [0, np.cos(theta), -np.sin(theta)], [0, np.sin(theta), np.cos(theta)]]  # Rx(20°)
+    yaw, pitch, roll = pose_from_matrix(m)
+    assert yaw == pytest.approx(0, abs=0.5)
+    assert pitch == pytest.approx(20, abs=0.5)
+    assert roll == pytest.approx(0, abs=0.5)
+
+
+def test_pose_from_matrix_recovers_roll():
+    theta = np.radians(20)
+    m = np.eye(4)
+    m[:3, :3] = [[np.cos(theta), -np.sin(theta), 0], [np.sin(theta), np.cos(theta), 0], [0, 0, 1]]  # Rz(20°)
+    yaw, pitch, roll = pose_from_matrix(m)
+    assert yaw == pytest.approx(0, abs=0.5)
+    assert pitch == pytest.approx(0, abs=0.5)
+    assert roll == pytest.approx(20, abs=0.5)
 
 
 def test_match_faces_by_iou():
@@ -61,6 +85,11 @@ def test_compact_blendshapes_filters_and_rounds():
     }
 
 
+def test_compact_blendshapes_clips_into_unit_interval():
+    # float noise from the model (1.0000001) must not violate the 0..1 bound of the wire model
+    assert compact_blendshapes([("jawOpen", 1.0000001), ("eyeBlinkLeft", 0.2)]) == {"jawOpen": 1.0, "eyeBlinkLeft": 0.2}
+
+
 def test_crop_with_margin_clamps_to_image():
     arr = np.zeros((100, 200, 3), dtype=np.uint8)
     crop = crop_with_margin(arr, FaceBox(top=0, right=200, bottom=100, left=0), margin=0.2)
@@ -76,5 +105,17 @@ def test_crop_with_margin_expands_inner_box():
 def test_engine_is_unavailable_without_asset(tmp_path):
     engine = MediaPipeExpressionEngine(tmp_path)
     assert engine.available is False
-    assert isinstance(engine.availability_reason, str) and engine.availability_reason
+    reason = engine.availability_reason
+    assert isinstance(reason, str) and ("missing model asset" in reason or "not installed" in reason)
     assert engine.analyze(b"x", [FaceBox(top=0, right=10, bottom=10, left=0)]) == [None]
+
+
+def test_engine_logs_first_failure_at_warning_then_debug(tmp_path, caplog):
+    engine = MediaPipeExpressionEngine(tmp_path)
+    with caplog.at_level(logging.DEBUG, logger="face2ai_app.adapters.mediapipe_expression"):
+        engine._log_failure("frame", RuntimeError("boom"))
+        engine._log_failure("frame", RuntimeError("boom again"))
+        engine._log_failure("face", ValueError("bad crop"))
+    levels = [(r.levelno, r.getMessage()) for r in caplog.records]
+    assert [lvl for lvl, _ in levels] == [logging.WARNING, logging.DEBUG, logging.WARNING]
+    assert "frame: RuntimeError: boom" in levels[0][1] and "face: ValueError: bad crop" in levels[2][1]

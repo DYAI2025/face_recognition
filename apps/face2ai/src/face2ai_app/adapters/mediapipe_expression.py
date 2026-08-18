@@ -87,8 +87,12 @@ def softmax_scores(logits8: Sequence[float]) -> dict[str, float]:
 
 
 def compact_blendshapes(pairs: Sequence[tuple[str, float]], threshold: float = BLENDSHAPE_THRESHOLD) -> dict[str, float]:
-    """Keep only named blendshapes at/above threshold (drops the `_neutral` pseudo-category), rounded to 2 decimals."""
-    return {name: round(float(score), 2) for name, score in pairs if name != "_neutral" and score >= threshold}
+    """Keep only named blendshapes at/above threshold (drops the `_neutral` pseudo-category), clipped to 0..1, rounded to 2 decimals."""
+    return {
+        name: round(min(1.0, max(0.0, float(score))), 2)
+        for name, score in pairs
+        if name != "_neutral" and score >= threshold
+    }
 
 
 def crop_with_margin(arr: np.ndarray, box: FaceBox, margin: float = CROP_MARGIN) -> np.ndarray:
@@ -120,6 +124,8 @@ class MediaPipeExpressionEngine:
         self._recognizer = None
         self._mp = None
         self._lock = threading.Lock()  # MediaPipe task instances are not thread-safe
+        self._warned_frame = False  # first frame-level failure logs at warning, later ones at debug
+        self._warned_face = False  # same for per-face failures
         try:
             import mediapipe as mp
             from mediapipe.tasks import python as mp_python
@@ -167,7 +173,7 @@ class MediaPipeExpressionEngine:
             with self._lock:
                 result = self._landmarker.detect(self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=arr))
         except Exception as exc:
-            logger.debug("expression analysis skipped for frame: %s: %s", type(exc).__name__, exc)
+            self._log_failure("frame", exc)
             return [None for _ in boxes]
 
         h, w = arr.shape[:2]
@@ -210,5 +216,19 @@ class MediaPipeExpressionEngine:
                 roll=roll,
             )
         except Exception as exc:
-            logger.debug("expression analysis skipped for one face: %s: %s", type(exc).__name__, exc)
+            self._log_failure("face", exc)
             return None
+
+    def _log_failure(self, scope: str, exc: Exception) -> None:
+        """Fail visibly once per scope (warning), then stay quiet (debug) so a broken model does not flood the log."""
+        flag = "_warned_frame" if scope == "frame" else "_warned_face"
+        first = not getattr(self, flag)
+        setattr(self, flag, True)
+        logger.log(
+            logging.WARNING if first else logging.DEBUG,
+            "expression analysis skipped for %s: %s: %s%s",
+            scope,
+            type(exc).__name__,
+            exc,
+            " (further occurrences logged at debug)" if first else "",
+        )

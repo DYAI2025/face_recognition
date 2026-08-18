@@ -76,14 +76,17 @@ class AffectHistory:
     ) -> TimelineSnapshot:
         """Everything recorded within ``[now - seconds, now]``, oldest first.
 
-        ``seconds`` defaults to ``max_seconds``; ``now`` defaults to the newest sample's ``at`` (so a
-        paused camera still shows its last window) or, without any sample, to the current UTC time.
+        ``seconds`` defaults to ``max_seconds``; ``now`` defaults to the newest entry across all three
+        buffers (so a paused camera still shows its last window) or, without any entry, to the current
+        UTC time. Anchoring on samples alone would hide every mood end and action that lands after the
+        last frame — exactly what a toggle-off, an expiry or a reset produces.
         With ``identity_id`` only samples, moods and actions of that identity are returned.
         """
         window = self._max_seconds if seconds is None else seconds
         with self._lock:
             if now is None:
-                now = self._samples[-1].at if self._samples else _now()
+                newest = [buffer[-1].at for buffer in (self._samples, self._moods, self._actions) if buffer]
+                now = max(newest) if newest else _now()
             start = now - timedelta(seconds=window)
 
             def keep(entry: AffectSample | MoodTransition | ActionEvent) -> bool:

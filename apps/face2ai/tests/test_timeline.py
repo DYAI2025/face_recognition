@@ -44,3 +44,19 @@ def test_moods_and_actions_are_kept_and_cleared():
     empty = h.snapshot()
     assert (empty.samples, empty.moods, empty.actions) == ([], [], [])
     assert h.clear() == 0  # nothing left to forget
+
+
+def test_a_mood_end_after_the_last_sample_stays_visible():
+    """A toggle-off/expiry/reset records a mood end after the last frame; anchoring the window on
+    samples alone used to hide it (measured 2026-08-18: buffer had it, snapshot did not)."""
+    h = AffectHistory(max_seconds=600)
+    h.record_sample(AffectSample(at=T0, valence=0.5))
+    h.record_mood(MoodTransition(at=T0, from_mood=None, to_mood="Happiness"))
+    h.record_mood(MoodTransition(at=T0 + timedelta(milliseconds=2), from_mood="Happiness", to_mood=None))
+    h.record_action(ActionEvent(at=T0 + timedelta(milliseconds=3), action="smile", onset_at=T0,
+                                apex_at=T0, offset_at=T0 + timedelta(milliseconds=3), peak=0.9,
+                                duration_ms=3, frames=2))
+    snap = h.snapshot()
+    assert [(m.from_mood, m.to_mood) for m in snap.moods] == [(None, "Happiness"), ("Happiness", None)]
+    assert [a.action for a in snap.actions] == ["smile"]
+    assert len(snap.samples) == 1

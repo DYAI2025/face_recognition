@@ -61,7 +61,7 @@ bash apps/face2ai/scripts/fetch-expression-models.sh
 uv run --project apps/face2ai face2ai
 curl -s http://127.0.0.1:8765/api/status | grep -o '"expression_[a-z]*":[^,}]*'      # expression_available:true, expression_enabled:false
 curl -s -X POST http://127.0.0.1:8765/api/expression -H 'content-type: application/json' -d '{"enabled":true}'   # {"enabled":true,"available":true}
-curl -s -N http://127.0.0.1:8765/api/events?role=probe                               # leave running: expect `event: mood` frames below
+curl -s -N 'http://127.0.0.1:8765/api/events?role=probe'                             # leave running: expect `event: mood` frames below
 ```
 
 1. Toggle-on works from the browser as well ("Expression: on"; the button is disabled while `/api/status` says the engine is unavailable).

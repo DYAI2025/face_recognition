@@ -59,7 +59,7 @@ or match distances leave the Mac (guarded by Face2AI's tests).
 ## Verify
 
 ```bash
-uv run --project ../face2ai --with pytest pytest tests            # 11 unit tests, no Hermes needed
+uv run --project ../face2ai --with pytest pytest tests            # 14 unit tests, no Hermes needed
 ssh hermes-brain 'bash -lc "hermes plugins list | grep face2ai; curl -s 127.0.0.1:8765/api/presence"'
 curl -s -H "Authorization: Bearer <dashboard token>" http://127.0.0.1:9119/api/plugins/face2ai/health   # via the 9119 tunnel
 # then ask Hermes (desktop / telegram / voice agent): "Wer steht gerade vor der Kamera?"

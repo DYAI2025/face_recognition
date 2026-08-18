@@ -22,7 +22,7 @@ dlib / model package
 
 ## Boundary rules
 
-- `domain/` has no FastAPI or `face_recognition` imports.
+- `domain/` has no FastAPI, `face_recognition`, mediapipe or emotiefflib imports.
 - `ports/` defines replacement boundaries.
 - `services/` owns matching and enrollment policy; `services/presence.py` turns per-frame RecognitionEvents into debounced presence transitions and `services/events.py` fans them (plus store and mood events) out to SSE subscribers; `services/mood.py` (`MoodTracker`) turns per-frame expression scores into a stable, hedged `Presence.mood` — it decorates presence, it never decides anything.
 - `adapters/` owns third-party and persistence details.

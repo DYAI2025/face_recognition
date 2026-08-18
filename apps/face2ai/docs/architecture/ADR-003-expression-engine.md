@@ -29,25 +29,29 @@ of face imagery into a tool whose promise is "nothing leaves the Mac".
    the emotion model runs on a margin-expanded crop of each box. `create_app` always constructs
    this adapter; when the `expression` extra or the model asset is missing it reports
    `available=False` with a reason and never crashes. `NullExpressionEngine` is the explicit
-   stand-in for callers that inject no engine (tests, embedding). Failures inside `analyze` are
-   logged once at warning, then debug — recognition continues without expressions.
+   stand-in for callers that want no engine (tests, embedding without the extra); callers that
+   inject nothing get `MediaPipeExpressionEngine`, which reports itself unavailable when the extra
+   or asset is missing. Failures inside `analyze` are logged once at warning, then debug —
+   recognition continues without expressions.
 2. **Opt-in, default off, per session.** `POST /api/expression {"enabled": bool}` toggles the
-   feature at runtime (409 while the engine is unavailable); `FACE2AI_EXPRESSION_ENABLED=true` only
-   pre-enables an *available* engine at startup. `/api/status` reports
-   `expression_available` / `expression_reason` / `expression_enabled`; the browser toggle stays
-   disabled until the status says the engine is available.
+   feature at runtime (409 when enabling while the engine is unavailable; disabling is always
+   accepted, 200); `FACE2AI_EXPRESSION_ENABLED=true` only pre-enables an *available* engine at
+   startup. `/api/status` reports `expression_available` / `expression_reason` /
+   `expression_enabled`; the browser toggle stays disabled until the status says the engine is
+   available.
 3. **Per-frame hint on the recognize response**: `IdentityService.recognize()` attaches an
    `Expression` to each `faces[]` observation *after* matching. Expression never takes part in
    matching, enrollment, presence, or the greeting decision.
 4. **Stable mood on the wire via `MoodTracker`** (`services/mood.py`): EMA over the 8 scores
-   (alpha 0.5, zero-start), candidate = argmax; committed once it has held for
-   `FACE2AI_MOOD_STABLE_TICKS` (3) consecutive frames with EMA ≥ `FACE2AI_MOOD_MIN_SCORE` (0.5).
-   Valence/arousal are frozen at commit time (one change per mood, not per frame). The mood follows
-   the stable presence (state + identity key): a key change, `stable_ticks` frames without a usable
-   expression, presence expiry/reset, or toggling the feature off end it. The result decorates
-   `Presence.mood/valence/arousal` and is published as SSE event `mood` (`from_mood` → `to_mood`,
-   `to_mood: null` = ended). A mood-end caused by a presence transition is always published *after*
-   that presence event, so consumers see a symmetric wire.
+   (alpha 0.5, zero-start), candidate = argmax; committed when the candidate has led for
+   `FACE2AI_MOOD_STABLE_TICKS` (3) consecutive frames and its EMA is ≥ `FACE2AI_MOOD_MIN_SCORE`
+   (0.5) at that tick. Valence/arousal are frozen at commit time (one change per mood, not per
+   frame). The mood follows the stable presence (state + identity key): a key change,
+   `stable_ticks` frames without a usable expression, presence expiry/reset, or toggling the
+   feature off end it. The result decorates `Presence.mood/valence/arousal` and is published as
+   SSE event `mood` (`from_mood` → `to_mood`, `to_mood: null` = ended). A mood-end caused by a
+   presence transition is always published *after* that presence event, so consumers see a
+   symmetric wire.
 5. **Wire discipline**: `Expression` carries labels, scores in 0..1, valence/arousal in -1..1, named
    blendshape floats (only ≥ 0.2, 2 decimals) and three pose angles. **No landmarks, no crops, no
    pixels, no embeddings** — the model forbids it by construction. `MoodTransition` is coarser
@@ -84,7 +88,9 @@ on other people without their consent — the same posture ADR-001 takes for enr
 
 - Install extra: `uv sync --project apps/face2ai --group dev --extra expression` (with
   `--extra recognition` for the real loop). `mediapipe==0.10.21`, `emotiefflib==1.1.1`,
-  `onnxruntime>=1.20,<2`; mediapipe pulls opencv-contrib and matplotlib — roughly 200 MB extra.
+  `onnxruntime>=1.20,<2`; ≈ 0.75 GB installed (mediapipe pulls jax/jaxlib, opencv, matplotlib —
+  the bulk is jaxlib 252 MB, cv2 120 MB, mediapipe 107 MB, onnxruntime 76 MB, scipy 70 MB,
+  onnx 67 MB, matplotlib 28 MB).
 - **mediapipe is pinned to 0.10.21**: 1.0.1's macOS wheel aborts in `DrishtiMetalHelper`; the
   adapter uses `BaseOptions.Delegate.CPU`.
 - **numpy override**: mediapipe 0.10.21 declares `numpy<2`, so `[tool.uv] override-dependencies =
@@ -95,10 +101,15 @@ on other people without their consent — the same posture ADR-001 takes for enr
   float16) into `FACE2AI_EXPRESSION_MODELS_DIR` (default `FACE2AI_DATA_DIR/models`, i.e.
   `~/.face2ai/models`) atomically. EmotiEffLib downloads `enet_b0_8_va_mtl.onnx` on first use
   into its own cache (one network round trip, once).
-- Timing (one face, full-frame decode + landmarker + EmotiEffLib, `examples/obama.jpg`,
-  1200 px wide): first `analyze` ~146 ms cold, ~77 ms warm — well inside the browser's 450 ms
-  loop. Component figures from the scratch project: landmarker ~9 ms/frame, emotion + VA
-  ~15 ms/face on a crop.
+- Timing, adapter alone (one face, full-frame decode + landmarker + EmotiEffLib,
+  `examples/obama.jpg`, 910×1137): first measurement `analyze` ~146 ms cold, ~77 ms warm; a
+  later warm run ~84 ms / ~27 ms — well inside the browser's 450 ms loop. Component figures
+  from the scratch project: landmarker ~9 ms/frame, emotion + VA ~15 ms/face on a crop.
+- Timing, live end to end (measured 2026-08-18 on the M1 against the running app: `POST
+  /api/recognize` round trip via curl, dlib HOG + expression, one face):
+  `examples/obama-480p.jpg` (853×480) ~130 ms without expression → ~150 ms with expression;
+  `examples/obama.jpg` (910×1137) ~300 ms → ~330–380 ms. Expression adds ~30–50 ms per frame
+  for one face.
 - Env: `FACE2AI_EXPRESSION_ENABLED` (false), `FACE2AI_EXPRESSION_MODELS_DIR`,
   `FACE2AI_MOOD_STABLE_TICKS` (3), `FACE2AI_MOOD_MIN_SCORE` (0.5).
 
@@ -118,8 +129,12 @@ on other people without their consent — the same posture ADR-001 takes for enr
   to the wire; recognition, enrollment and greeting are untouched.
 - (+) The default install (no extra) behaves exactly as before: `expression_available:false`,
   toggle disabled, `faces[].expression` null, no `mood` events. CI stays light.
-- (−) A ~200 MB optional dependency set with a version pin and a numpy override that must be
-  revisited; a first-use model download by EmotiEffLib.
+- (−) An optional dependency set of ≈ 0.75 GB installed (mediapipe pulls jax/jaxlib, opencv,
+  matplotlib) with a version pin and a numpy override that must be revisited; a first-use model
+  download by EmotiEffLib.
+- Shell and `/assets/*` are served with `Cache-Control: no-cache` (ETag revalidation) since
+  2026-08-18 — a redeploy must never pair a fresh `app.js` with a heuristically cached `model.js`
+  (this broke the shell once during verification).
 - (−) A model that can be wrong in ways users may over-trust — mitigated by wording, tests on the
   wording, opt-in and the tile's "a hint, not a fact" label, but not eliminated.
 - New surface: `ExpressionEngine` port + two adapters, `MoodTracker`, `POST /api/expression`,

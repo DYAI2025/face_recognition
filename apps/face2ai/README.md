@@ -41,7 +41,7 @@ The `face_recognition` dependency is resolved from the repository root through `
 
 Stage 1 of the expression engine (ADR-003) reads facial expression **locally** and only when asked. Nothing about it is stored, nothing leaves the machine, and it never gates recognition, enrollment or the greeting. It is a hint about how a face *appears* to a model — the UI says "looks happy", the German consumers say "wirkt fröhlich" — never a fact, never a lie detector. "Micro-expressions" in the strict (involuntary, < 500 ms) sense are out of scope; Stage 1 delivers expression + intensity + head pose per frame plus a debounced mood.
 
-Install and fetch the model asset (about 200 MB of extra dependencies; EmotiEffLib downloads its ONNX model into its own cache on first use):
+Install and fetch the model asset (≈ 0.75 GB installed — mediapipe pulls jax/jaxlib, opencv, matplotlib; EmotiEffLib downloads its ONNX model into its own cache on first use):
 
 ```bash
 uv sync --project apps/face2ai --group dev --extra recognition --extra expression
@@ -54,13 +54,17 @@ Environment: `FACE2AI_EXPRESSION_ENABLED` (default `false`; pre-enables only an 
 
 API surface:
 
-- `POST /api/expression` with `{"enabled": true|false}` — per-session runtime toggle, off by default; 409 while the engine is unavailable; switching off ends the current mood immediately (a `mood` event with `to_mood: null`). Response `{"enabled", "available"}`.
+- `POST /api/expression` with `{"enabled": true|false}` — per-session runtime toggle, off by default; 409 when enabling while the engine is unavailable, disabling is always accepted (200); switching off ends the current mood immediately (a `mood` event with `to_mood: null`). Response `{"enabled", "available"}`.
 - `GET /api/status` — `expression_available`, `expression_reason`, `expression_enabled`.
 - `POST /api/recognize` — while enabled each `faces[]` observation carries `expression`: `{dominant, scores{Anger,Contempt,Disgust,Fear,Happiness,Neutral,Sadness,Surprise}, valence, arousal, blendshapes{name: 0..1, only ≥ 0.2}, yaw, pitch, roll}` — or `null` when the engine could not read that face. No landmarks, crops or pixels are ever on the wire.
 - `GET /api/presence` / SSE `hello`, `heartbeat` — `Presence.mood`, `valence`, `arousal` (null while no mood is committed).
-- SSE `mood` — emitted once per stable mood change (server-side `MoodTracker`: EMA over the scores, alpha 0.5; a label commits after `FACE2AI_MOOD_STABLE_TICKS` consecutive frames with EMA ≥ `FACE2AI_MOOD_MIN_SCORE`; valence/arousal are frozen at commit). The mood follows the stable presence: a presence change, `stable_ticks` frames without a readable expression (several faces, no face, expression off), presence expiry/reset or the toggle-off end it with `to_mood: null`. The browser's "Mood" event-stream entries are a separate 3-frame debounce of the per-frame hints; the wire mood is the server's.
+- SSE `mood` — emitted once per stable mood change (server-side `MoodTracker`: EMA over the scores, alpha 0.5; a label commits when the candidate has led for `FACE2AI_MOOD_STABLE_TICKS` consecutive frames and its EMA is ≥ `FACE2AI_MOOD_MIN_SCORE` at that tick; valence/arousal are frozen at commit). The mood follows the stable presence: a presence change, `stable_ticks` frames without a readable expression (several faces, no face, expression off), presence expiry/reset or the toggle-off end it with `to_mood: null`. The browser's "Mood" event-stream entries are a separate 3-frame debounce of the per-frame hints; the wire mood is the server's.
 
-Measured on the M1 (one face, full-frame decode + landmarker + EmotiEffLib, `examples/obama.jpg`): first `analyze` ~146 ms cold, ~77 ms warm — inside the browser's 450 ms loop. Legal note, honesty section, dependency facts and review triggers: `docs/architecture/ADR-003-expression-engine.md`.
+Measured on the M1 (2026-08-18, one face): adapter alone (full-frame decode + landmarker + EmotiEffLib, `examples/obama.jpg`, 910×1137) `analyze` ~146 ms cold / ~77 ms warm on the first measurement, ~84 / ~27 ms on a later warm run; live `POST /api/recognize` round trip via curl (dlib HOG + expression) `examples/obama-480p.jpg` (853×480) ~130 ms → ~150 ms with expression, `examples/obama.jpg` ~300 ms → ~330–380 ms — expression adds ~30–50 ms per frame, inside the browser's 450 ms loop.
+
+Shell and `/assets/*` are served with `Cache-Control: no-cache` (ETag revalidation) since 2026-08-18 — a redeploy must never pair a fresh `app.js` with a heuristically cached `model.js` (this broke the shell once during verification).
+
+Legal note, honesty section, dependency facts and review triggers: `docs/architecture/ADR-003-expression-engine.md`.
 
 ## Verification
 

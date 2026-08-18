@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # Deliberately without the `expression` extra (mediapipe + EmotiEffLib, ~200 MB, ADR-003):
+      # Deliberately without the `expression` extra (mediapipe + EmotiEffLib, ≈ 0.75 GB installed, ADR-003):
       # the adapter imports its models lazily, so the expression/mood/wording tests below run against
       # the FakeExpressionEngine and the pure helpers. Real models are the target-Mac gate in
       # apps/face2ai/docs/boilerplate/VALIDATION.md, not CI.

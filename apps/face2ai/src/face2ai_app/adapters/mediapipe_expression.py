@@ -124,8 +124,8 @@ class MediaPipeExpressionEngine:
         self._recognizer = None
         self._mp = None
         self._lock = threading.Lock()  # MediaPipe task instances are not thread-safe
-        self._warned_frame = False  # first frame-level failure logs at warning, later ones at debug
-        self._warned_face = False  # same for per-face failures
+        # First failure per scope logs at warning, later ones at debug (frame = whole image, face = one crop).
+        self._warned: dict[str, bool] = {"frame": False, "face": False}
         try:
             import mediapipe as mp
             from mediapipe.tasks import python as mp_python
@@ -221,9 +221,8 @@ class MediaPipeExpressionEngine:
 
     def _log_failure(self, scope: str, exc: Exception) -> None:
         """Fail visibly once per scope (warning), then stay quiet (debug) so a broken model does not flood the log."""
-        flag = "_warned_frame" if scope == "frame" else "_warned_face"
-        first = not getattr(self, flag)
-        setattr(self, flag, True)
+        first = not self._warned[scope]  # KeyError on an unknown scope: fail visibly
+        self._warned[scope] = True
         logger.log(
             logging.WARNING if first else logging.DEBUG,
             "expression analysis skipped for %s: %s: %s%s",

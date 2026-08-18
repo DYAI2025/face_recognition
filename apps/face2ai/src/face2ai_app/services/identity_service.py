@@ -35,6 +35,20 @@ class IdentityService:
         self.expression_enabled = False  # runtime toggle (POST /api/expression); main.py seeds it from settings
         self._expression_warned = False
 
+    @property
+    def expression_available(self) -> bool:
+        """An expression engine is configured and loaded (the opt-in can be switched on)."""
+        return self.expression is not None and bool(self.expression.available)
+
+    @property
+    def expression_reason(self) -> str | None:
+        """Why expressions are unavailable; ``None`` while the engine is available."""
+        if self.expression is None:
+            return "not configured"
+        if self.expression.available:
+            return None
+        return self.expression.availability_reason or "expression engine unavailable"
+
     def _nearest(
         self, candidate: list[float], identities: list[IdentityRecord]
     ) -> tuple[IdentityRecord | None, float | None]:
@@ -92,11 +106,10 @@ class IdentityService:
         self, image_bytes: bytes, detected: list[DetectedFace], observations: list[FaceObservation]
     ) -> None:
         """Best effort: a failing expression engine leaves ``expression`` None and never breaks recognition."""
-        engine = self.expression
-        if engine is None or not self.expression_enabled or not engine.available:
+        if not (self.expression_enabled and self.expression_available):
             return
         try:
-            expressions = engine.analyze(image_bytes, [face.box for face in detected])
+            expressions = self.expression.analyze(image_bytes, [face.box for face in detected])
         except Exception as exc:
             logger.log(
                 logging.DEBUG if self._expression_warned else logging.WARNING,

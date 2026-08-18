@@ -93,6 +93,26 @@ def test_status_reports_unavailable_expression_engine(tmp_path: Path, fake_engin
     assert status["expression_enabled"] is False
 
 
+def test_startup_log_for_unavailable_expression_engine(tmp_path: Path, fake_engine, caplog):
+    """Opt-in off: an absent engine is INFO. Opt-in on: exactly one WARNING, nothing else about it."""
+    import logging
+
+    store = JsonIdentityStore(Settings(data_dir=tmp_path).identity_store_path)
+    with caplog.at_level(logging.INFO, logger="face2ai_app.main"):
+        create_app(settings=Settings(data_dir=tmp_path), engine=fake_engine, store=store, expression=NullExpressionEngine("not installed"))
+    expression_lines = [r for r in caplog.records if "expression" in r.getMessage()]
+    assert [r.levelno for r in expression_lines] == [logging.INFO]
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="face2ai_app.main"):
+        create_app(
+            settings=Settings(data_dir=tmp_path, expression_enabled=True),
+            engine=fake_engine, store=store, expression=NullExpressionEngine("not installed"),
+        )
+    expression_lines = [r for r in caplog.records if "expression" in r.getMessage()]
+    assert [r.levelno for r in expression_lines] == [logging.WARNING]
+    assert "not installed" in expression_lines[0].getMessage()
+
+
 def test_env_opt_in_enables_available_engine(tmp_path: Path, fake_engine, fake_expression, face):
     settings = Settings(data_dir=tmp_path, expression_enabled=True)
     store = JsonIdentityStore(settings.identity_store_path)

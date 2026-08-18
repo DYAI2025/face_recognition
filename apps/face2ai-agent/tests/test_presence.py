@@ -180,3 +180,38 @@ def test_mood_word_tables_cover_exactly_the_eight_wire_labels():
     assert set(MOOD_WORDS["de"]["labels"]) == set(MOOD_WORDS["en"]["labels"]) == expected
     for words in MOOD_WORDS.values():
         assert all(isinstance(v, str) and v for v in words["labels"].values())
+
+
+async def test_presence_loop_ignores_action_frames_by_design():
+    """Stage 2 SSE ``action`` (a completed facial action: onset/apex/offset) is for panes and history only.
+    The voice loop must stay inert: no dispatch, no exception, memory untouched — live and replayed alike —
+    and the frames after it are still handled."""
+    from face2ai_agent import presence as mod
+
+    action = {"identity_id": "a", "display_name": "Ada", "action": "smile", "onset_at": T0.isoformat(),
+              "apex_at": (T0 + timedelta(milliseconds=600)).isoformat(), "offset_at": (T0 + timedelta(milliseconds=1200)).isoformat(),
+              "peak": 0.71, "duration_ms": 1200, "frames": 2}
+    frames = [
+        mod.SseFrame("hello", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}, "last_sequence": 1}),
+        mod.SseFrame("action", {"sequence": 1, "at": T0.isoformat(), **action}, "1"),  # replayed (sequence <= hello.last_sequence)
+        mod.SseFrame("action", {"sequence": 2, "at": T0.isoformat(), **action}, "2"),  # live
+        mod.SseFrame("heartbeat", {"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}}),
+    ]
+
+    class FakeClient:
+        async def frames(self):
+            for f in frames:
+                yield f
+
+    seen = []
+
+    async def on_event(kind, payload, replayed):
+        seen.append((kind, replayed))
+
+    memory = mod.PresenceMemory()
+    await mod.run_presence_loop(FakeClient(), memory, on_event)
+    assert seen == [("hello", False), ("heartbeat", False)]  # neither action frame is dispatched
+    assert memory.current == mod.Presence.from_payload(frames[0].data["presence"])  # memory unchanged by actions
+    assert memory.current.mood == "Happiness" and memory.current.state == "KNOWN"
+    assert len(memory.history) == 0 and len(memory.store_changes) == 0 and memory.identity_count is None
+    assert "smile" not in memory.describe(T0) and "smile" not in memory.describe(T0, language="de")

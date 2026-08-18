@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,16 +74,13 @@ class LiveServer:
         return frames[:wanted]
 
 
-@pytest.fixture
-def live(tmp_path: Path, fake_engine, fake_expression) -> Iterator[LiveServer]:
-    settings = Settings(
-        data_dir=tmp_path,
-        presence_stable_ticks=1,
-        mood_stable_ticks=1,
-        action_min_frames=1,  # one frame may complete an action: a dropped one is then provably dropped
-        events_heartbeat_seconds=0.05,
-        greeting_cooldown_seconds=7,
-    )
+@contextmanager
+def _live_server(settings: Settings, fake_engine, fake_expression) -> Iterator[LiveServer]:
+    """Run the app under a real uvicorn on a free loopback port for the duration of the block.
+
+    A test whose ``Settings`` the shared ``live`` fixture cannot express (a short stale window, say)
+    builds its own server with this instead of weakening its assertions.
+    """
     app = create_app(
         settings=settings, engine=fake_engine, store=JsonIdentityStore(settings.identity_store_path), expression=fake_expression
     )
@@ -95,10 +93,26 @@ def live(tmp_path: Path, fake_engine, fake_expression) -> Iterator[LiveServer]:
         assert time.time() < deadline, "uvicorn did not start"
         time.sleep(0.02)
     base_url = f"http://127.0.0.1:{port}"
-    with httpx.Client(base_url=base_url, timeout=5.0) as client:
-        yield LiveServer(base_url=base_url, client=client)
-    server.should_exit = True
-    thread.join(timeout=5)
+    try:
+        with httpx.Client(base_url=base_url, timeout=5.0) as client:
+            yield LiveServer(base_url=base_url, client=client)
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+@pytest.fixture
+def live(tmp_path: Path, fake_engine, fake_expression) -> Iterator[LiveServer]:
+    settings = Settings(
+        data_dir=tmp_path,
+        presence_stable_ticks=1,
+        mood_stable_ticks=1,
+        action_min_frames=1,  # one frame may complete an action: a dropped one is then provably dropped
+        events_heartbeat_seconds=0.05,
+        greeting_cooldown_seconds=7,
+    )
+    with _live_server(settings, fake_engine, fake_expression) as server:
+        yield server
 
 
 def test_presence_endpoint_follows_recognition_and_reset(live, fake_engine, face):
@@ -347,40 +361,27 @@ def test_stale_presence_expires_to_no_signal_and_is_published(tmp_path: Path, fa
     settings = Settings(
         data_dir=tmp_path, presence_stable_ticks=1, mood_stable_ticks=1, presence_stale_seconds=0.2, events_heartbeat_seconds=0.05
     )
-    app = create_app(
-        settings=settings, engine=fake_engine, store=JsonIdentityStore(settings.identity_store_path), expression=fake_expression
-    )
-    port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    while not server.started:
-        time.sleep(0.02)
-    try:
-        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=5.0) as client:
-            live = LiveServer(base_url=client.base_url, client=client)
-            fake_engine.faces = [face]
-            _enable_expression(live, fake_expression, [HAPPY])
-            _recognize(live, times=2)  # UNKNOWN (seq 1), mood Happiness (seq 2)
-            assert client.get("/api/presence").json()["mood"] == "Happiness"
-            time.sleep(0.4)  # longer than stale_seconds: no frames
-            frames = live.sse("/api/events?after=0", wanted=5, skip_heartbeats=True)
-            assert [f["event"] for f in frames] == ["hello", "presence", "mood", "presence", "mood"]
-            hello_presence = frames[0]["data"]["presence"]
-            assert (hello_presence["state"], hello_presence["mood"]) == ("NO_SIGNAL", None)  # expired before hello
-            assert frames[1]["data"]["to_state"] == "UNKNOWN"
-            assert frames[3]["data"]["from_state"] == "UNKNOWN" and frames[3]["data"]["to_state"] == "NO_SIGNAL"
-            # Expiry ends the mood on the wire too, right after the presence it belonged to.
-            ended = frames[4]["data"]
-            assert (ended["from_mood"], ended["to_mood"]) == ("Happiness", None) and ended["at"] == frames[3]["data"]["at"]
-            _recognize(live)  # back: fresh arrival, and the mood tracker was reset with the expiry ...
-            presence = client.get("/api/presence").json()
-            assert (presence["state"], presence["mood"]) == ("UNKNOWN", None)
-            _recognize(live)  # ... so the returning person builds a fresh mood instead of being stuck without one
-            assert client.get("/api/presence").json()["mood"] == "Happiness"
-    finally:
-        server.should_exit = True
-        thread.join(timeout=5)
+    with _live_server(settings, fake_engine, fake_expression) as live:
+        client = live.client
+        fake_engine.faces = [face]
+        _enable_expression(live, fake_expression, [HAPPY])
+        _recognize(live, times=2)  # UNKNOWN (seq 1), mood Happiness (seq 2)
+        assert client.get("/api/presence").json()["mood"] == "Happiness"
+        time.sleep(0.4)  # longer than stale_seconds: no frames
+        frames = live.sse("/api/events?after=0", wanted=5, skip_heartbeats=True)
+        assert [f["event"] for f in frames] == ["hello", "presence", "mood", "presence", "mood"]
+        hello_presence = frames[0]["data"]["presence"]
+        assert (hello_presence["state"], hello_presence["mood"]) == ("NO_SIGNAL", None)  # expired before hello
+        assert frames[1]["data"]["to_state"] == "UNKNOWN"
+        assert frames[3]["data"]["from_state"] == "UNKNOWN" and frames[3]["data"]["to_state"] == "NO_SIGNAL"
+        # Expiry ends the mood on the wire too, right after the presence it belonged to.
+        ended = frames[4]["data"]
+        assert (ended["from_mood"], ended["to_mood"]) == ("Happiness", None) and ended["at"] == frames[3]["data"]["at"]
+        _recognize(live)  # back: fresh arrival, and the mood tracker was reset with the expiry ...
+        presence = client.get("/api/presence").json()
+        assert (presence["state"], presence["mood"]) == ("UNKNOWN", None)
+        _recognize(live)  # ... so the returning person builds a fresh mood instead of being stuck without one
+        assert client.get("/api/presence").json()["mood"] == "Happiness"
 
 
 # ------------------------------------------------------------- actions + timeline (Stage 2)
@@ -492,3 +493,43 @@ def test_toggle_off_clears_a_live_affect_without_a_committed_mood(live, fake_eng
     assert (presence["state"], presence["mood"], presence["valence"], presence["arousal"]) == ("UNKNOWN", None, None, None)
     frames = live.sse("/api/events?after=0", wanted=3)  # no mood was committed, so nothing ends on the wire
     assert [f["event"] for f in frames] == ["hello", "presence", "heartbeat"]
+
+
+def _timeline_moods(live: LiveServer) -> list[tuple[str | None, str | None]]:
+    return [(m["from_mood"], m["to_mood"]) for m in live.client.get("/api/expression/timeline").json()["moods"]]
+
+
+def test_toggle_off_mood_end_is_visible_in_the_timeline(live, fake_engine, fake_expression, face):
+    """The wire and the timeline have to agree: a mood the toggle ends is *closed* in the history too.
+
+    That end is recorded after the last affect sample — the case a sample-anchored window used to hide,
+    leaving a mirror replaying the timeline stuck on a mood the user already switched off.
+    """
+    fake_engine.faces = [face]
+    _enable_expression(live, fake_expression, [HAPPY])
+    _recognize(live, times=2)  # mood_stable_ticks is 1, but the EMA (alpha 0.5, from 0) needs two frames
+    assert _timeline_moods(live) == [(None, "Happiness")]
+    assert live.client.post("/api/expression", json={"enabled": False}).json()["enabled"] is False
+    assert _timeline_moods(live) == [(None, "Happiness"), ("Happiness", None)]
+    ended = live.client.get("/api/expression/timeline").json()["moods"][-1]
+    assert ended["from_mood"] == "Happiness" and ended["to_mood"] is None
+
+
+def test_expired_presence_mood_end_is_visible_in_the_timeline(tmp_path: Path, fake_engine, fake_expression, face):
+    """Same for the lazy expiry: the person stopped sending frames, so the end has no frame of its own.
+
+    The shared ``live`` fixture cannot express the short stale window, hence a second server.
+    """
+    settings = Settings(
+        data_dir=tmp_path, presence_stable_ticks=1, mood_stable_ticks=1, presence_stale_seconds=0.2, events_heartbeat_seconds=0.05
+    )
+    with _live_server(settings, fake_engine, fake_expression) as live:
+        fake_engine.faces = [face]
+        _enable_expression(live, fake_expression, [HAPPY])
+        _recognize(live, times=2)  # UNKNOWN (seq 1), mood Happiness (seq 2)
+        assert _timeline_moods(live) == [(None, "Happiness")]
+        time.sleep(0.4)  # longer than stale_seconds: no frames
+        assert live.client.get("/api/presence").json()["state"] == "NO_SIGNAL"  # the read is what expires it
+        assert _timeline_moods(live) == [(None, "Happiness"), ("Happiness", None)]
+        ended = live.client.get("/api/expression/timeline").json()["moods"][-1]
+        assert ended["from_mood"] == "Happiness" and ended["to_mood"] is None

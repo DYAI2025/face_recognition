@@ -106,3 +106,23 @@ def test_timeline_non_2xx_and_unexpected_payload_keep_the_shape(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _fake_client(calls, ["not", "a", "dict"]))
     body = client.get("/timeline", params={"seconds": 60}).json()
     assert body == {"error": "unexpected timeline payload", "seconds": 60, "samples": [], "moods": [], "actions": []}
+
+
+def test_live_presence_says_connected_like_both_fallback_branches(monkeypatch):
+    """The desktop chip reads `latest.connected` and `refresh()` replaces `latest` wholesale
+    (`plugin.js`: `latest = await pluginCtx.rest('/presence')`), so a live answer without the key
+    is falsy — "Face2AI nicht verbunden" after every *successful* poll, until the next SSE frame.
+    All three branches must answer the same question."""
+    calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_client(calls, {"state": "KNOWN", "display_name": "Ada", "faces": 1}))
+    monkeypatch.setattr(plugin_api, "_events_url", lambda: "http://face2ai.test:8765")
+    monkeypatch.setattr(plugin_api, "_snapshot_from_state", lambda: None)
+    body = TestClient(_app()).get("/presence").json()
+    assert body["source"] == "live"
+    assert body["presence"]["display_name"] == "Ada"
+    assert body["connected"] is True
+
+    # ... and the failure branch still says the opposite, so the key discriminates.
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_client(calls, exc=httpx.ConnectError("refused")))
+    down = TestClient(_app()).get("/presence").json()
+    assert (down["source"], down["connected"]) == ("none", False)

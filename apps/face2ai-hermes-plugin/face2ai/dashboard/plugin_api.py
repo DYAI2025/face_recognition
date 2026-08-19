@@ -72,7 +72,9 @@ async def presence() -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.get(f"{_events_url()}/api/presence")
             response.raise_for_status()
-            return {"source": "live", "presence": response.json(), "events_url": _events_url()}
+            # `connected` is what the desktop chip reads, and `refresh()` replaces its `latest`
+            # wholesale — omitting it here reads as "nicht verbunden" after every *successful* poll.
+            return {"source": "live", "connected": True, "presence": response.json(), "events_url": _events_url()}
     except Exception as exc:
         snap = _snapshot_from_state()
         if snap:

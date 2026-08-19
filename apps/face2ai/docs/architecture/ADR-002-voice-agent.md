@@ -34,7 +34,12 @@ LLM-shaped process.
    presence transitions with a per-identity cooldown taken from the server; the browser only logs
    the hand-off. Probes (`check`, `smoke`) subscribe as `role=probe` and never take ownership.
    Presence expires server-side after `FACE2AI_PRESENCE_STALE_SECONDS` without frames, so a
-   person who leaves while the tab is hidden and returns is a fresh arrival.
+   person who leaves while the tab is hidden and returns is a fresh arrival. That expiry is the
+   *only* server-side freshness rule: the wire carries `Presence.observed_at`, never a freshness
+   flag. A consumer that wants one owns the budget it compares against (the Hermes plugin withholds
+   its whole context line above `context_max_age_seconds`); a flag on the wire would either
+   duplicate the expiry threshold or, if equal to it, never be reachable — the presence would
+   already be `NO_SIGNAL`.
 6. **Console mode first**: the agent uses the machine's microphone/speaker via LiveKit console
    mode. Browser audio through a LiveKit room (server + JS client) is a later step and would be
    the first frontend dependency — a separate ADR when it comes.

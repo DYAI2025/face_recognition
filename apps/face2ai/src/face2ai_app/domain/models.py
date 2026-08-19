@@ -141,6 +141,12 @@ class Presence(BaseModel):
 
     ``valence``/``arousal`` are the *live* smoothed affect (Stage 2) — may be present without a
     ``mood``; ``mood`` keeps its hysteresis.
+
+    No freshness flag: ``observed_at`` is when the last frame was seen, and the server's only
+    freshness rule is ``PresenceTracker.expire()`` (``FACE2AI_PRESENCE_STALE_SECONDS``), which turns
+    a presence without frames into ``NO_SIGNAL``. A consumer that wants a freshness line owns its own
+    budget and compares it against ``observed_at``; a second server-side threshold would either
+    duplicate ``expire()``'s or, if equal to it, be unreachable.
     """
 
     state: PresenceState = PresenceState.NO_SIGNAL
@@ -149,7 +155,6 @@ class Presence(BaseModel):
     faces: int = 0
     since: datetime | None = None
     observed_at: datetime | None = None
-    stale: bool = False
     mood: str | None = None
     valence: float | None = Field(default=None, ge=-1.0, le=1.0)
     arousal: float | None = Field(default=None, ge=-1.0, le=1.0)

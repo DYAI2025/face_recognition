@@ -51,13 +51,19 @@ def test_memory_hello_transitions_and_describe():
     assert "2 people are enrolled" in memory.describe(T0 + timedelta(seconds=42))
 
 
-def test_memory_multiple_and_stale_and_engine_down():
+def test_memory_multiple_and_engine_down_and_no_freshness_claim():
+    """Freshness is not on the wire and the agent must not claim it.
+
+    A `stale` key from an older backend is ignored, not turned into an honesty line the agent
+    cannot back up — it owns no clock for presence (only `Presence.since` elapsed text).
+    """
     memory = PresenceMemory()
     memory.apply_hello({"presence": {"state": "MULTIPLE_FACES", "faces": 3, "stale": True}, "engine_available": False})
     text = memory.describe()
     assert "3 people" in text and "cannot attribute identity" in text
-    assert "No fresh frames" in text
+    assert "No fresh frames" not in text
     assert "engine reports itself unavailable" in text
+    assert not hasattr(memory.current, "stale")
     memory.apply_heartbeat({"presence": {"state": "NO_SIGNAL"}})
     assert "camera is currently off" in memory.describe()
 
@@ -74,7 +80,7 @@ def test_situation_key_ignores_elapsed_time_but_tracks_state_changes():
     key = memory.situation_key()
     assert memory.describe(T0 + timedelta(seconds=1)) != memory.describe(T0 + timedelta(seconds=90))  # elapsed text differs
     assert memory.situation_key() == key  # ... but the situation key is stable
-    memory.apply_heartbeat({"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "stale": True}})
+    memory.apply_heartbeat({"presence": {"state": "KNOWN", "identity_id": "b", "display_name": "Bo"}})
     assert memory.situation_key() != key
     assert memory.hello_sequence == 7
     assert memory.is_replayed({"sequence": 7}) and memory.is_replayed({"sequence": 3})

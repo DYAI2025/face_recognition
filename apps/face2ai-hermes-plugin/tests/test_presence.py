@@ -46,12 +46,19 @@ def test_replayed_transitions_update_state_but_do_not_react():
     assert live is not None and live.to_state == "UNKNOWN"
 
 
-def test_unknown_multiple_stale_and_engine_down_wording():
+def test_unknown_multiple_and_engine_down_wording_without_a_freshness_claim():
+    """Freshness is not on the wire and this store must not claim it from a payload key.
+
+    The plugin's freshness owner is `context_line(max_age_seconds=…)`, which withholds the whole
+    line from its own clock (`last_frame_at`) — one rule, one place. A `stale` key from an older
+    backend is ignored rather than turned into a sentence nothing keeps true.
+    """
     store = PresenceStore()
     store.apply(SseFrame("hello", {"presence": {"state": "UNKNOWN", "faces": 1, "stale": True}, "engine_available": False}), now=T0)
     text = describe(store, now=T0)
     assert "kennt sie nicht" in text and "Rate keinen Namen" in text
-    assert "keine frischen Frames" in text.lower() or "Keine frischen Frames" in text
+    assert "frischen Frames" not in text
+    assert "stale" not in store.snapshot()["presence"]
     assert "nicht verfügbar" in text
     store.apply(SseFrame("heartbeat", {"presence": {"state": "MULTIPLE_FACES", "faces": 3}}), now=T0)
     assert "3 Personen" in describe(store, now=T0)

@@ -110,7 +110,6 @@ class Presence:
     display_name: str | None = None
     faces: int = 0
     since: datetime | None = None
-    stale: bool = False
     mood: str | None = None  # best-effort hint ("wirkt …"), never a fact; None = nothing to say
     valence: float | None = None  # -1..1
     arousal: float | None = None  # -1..1
@@ -125,7 +124,6 @@ class Presence:
             display_name=payload.get("display_name"),
             faces=int(payload.get("faces") or 0),
             since=_parse_time(payload.get("since")),
-            stale=bool(payload.get("stale", False)),
             mood=mood if isinstance(mood, str) and mood else None,
             valence=_number(payload.get("valence")),
             arousal=_number(payload.get("arousal")),
@@ -214,7 +212,7 @@ class PresenceMemory:
     def situation_key(self) -> tuple:
         """Changes only when the prompt-relevant situation changes (not every heartbeat)."""
         p = self.current
-        return (self.connected, p.state, p.identity_id, p.stale, self.engine_available, self.identity_count)
+        return (self.connected, p.state, p.identity_id, self.engine_available, self.identity_count)
 
     def is_replayed(self, frame_data: dict[str, Any]) -> bool:
         seq = frame_data.get("sequence")
@@ -260,8 +258,8 @@ class PresenceMemory:
         if p.since is not None:
             seconds = max(0, int((now - p.since).total_seconds()))
             head += f" This has been the case for about {seconds} seconds."
-        if p.stale:
-            head += " (No fresh frames lately — the browser tab may be paused.)"
+        # No freshness sentence: Face2AI expires a presence without frames to NO_SIGNAL itself, and
+        # this memory owns no clock over the SSE stream to make a second claim from.
         if self.engine_available is False:
             head += " The recognition engine reports itself unavailable."
         mood = mood_sentence(p.mood, p.valence, p.arousal, language=language, subject=p.display_name if p.state == "KNOWN" else None)

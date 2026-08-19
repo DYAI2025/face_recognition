@@ -88,7 +88,7 @@ class PresenceTracker:
             else:
                 self._candidate_key = key
                 self._candidate_count = 1
-            self._current = self._current.model_copy(update={"observed_at": now, "stale": False})
+            self._current = self._current.model_copy(update={"observed_at": now})
 
             current_key = (self._current.state, self._current.identity_id)
             if key == current_key:
@@ -117,7 +117,6 @@ class PresenceTracker:
             faces=len(event.faces),
             since=now,
             observed_at=now,
-            stale=False,
         )
         return transition
 
@@ -145,14 +144,12 @@ class PresenceTracker:
                 return None
             return self._to_no_signal(now)
 
-    def snapshot(self, now: datetime | None = None) -> Presence:
-        """Current presence; ``stale`` is set when no frame has been observed for ``stale_after``.
+    def snapshot(self) -> Presence:
+        """The current presence, as-is — a read that never ages anything and never judges freshness.
 
-        Read-only: callers that want the stale presence to *become* NO_SIGNAL call ``expire()``.
+        There is exactly one server-side freshness rule and it is ``expire()``. ``snapshot()`` reports
+        ``observed_at``; a consumer that wants a "no fresh frames" line owns the budget it compares
+        against (the Hermes plugin does, via ``context_line(max_age_seconds=…)``).
         """
-        now = now or _now()
         with self._lock:
-            current = self._current
-            if current.state is PresenceState.NO_SIGNAL or current.observed_at is None:
-                return current.model_copy(update={"stale": False})
-            return current.model_copy(update={"stale": now - current.observed_at > self._stale_after})
+            return self._current.model_copy()

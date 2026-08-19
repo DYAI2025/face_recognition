@@ -122,7 +122,9 @@ def test_presence_endpoint_follows_recognition_and_reset(live, fake_engine, face
     presence = live.client.get("/api/presence").json()
     assert presence["state"] == "UNKNOWN"
     assert presence["faces"] == 1
-    assert presence["stale"] is False
+    # Freshness is not a server-side flag: `observed_at` is the fact, `expire()` is the only rule.
+    assert "stale" not in presence
+    assert presence["observed_at"] is not None
     assert live.client.post("/api/presence/reset").json()["state"] == "NO_SIGNAL"
 
 
@@ -221,7 +223,7 @@ def test_events_stream_carries_only_the_documented_keys(live, fake_engine, face)
     frames = live.sse("/api/events?after=0", wanted=3)
     hello, presence, store = frames
     presence_keys = {
-        "state", "identity_id", "display_name", "faces", "since", "observed_at", "stale", "mood", "valence", "arousal",
+        "state", "identity_id", "display_name", "faces", "since", "observed_at", "mood", "valence", "arousal",
     }
     assert set(hello["data"]["presence"]) == presence_keys
     assert set(presence["data"]) == {"sequence", "at", "from_state", "to_state", "identity_id", "display_name", "faces"}

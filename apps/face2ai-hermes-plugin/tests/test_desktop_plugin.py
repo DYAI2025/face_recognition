@@ -48,3 +48,13 @@ def test_desktop_pane_asks_face2ai_for_one_persons_timeline_on_its_own_cadence()
     interval = re.search(r"TIMELINE_MIN_INTERVAL_MS = (\d+)", text)
     poll = re.search(r"POLL_MS = (\d+)", text)
     assert interval and poll and int(interval.group(1)) >= 5 * int(poll.group(1))
+
+
+def test_desktop_pane_makes_no_freshness_claim():
+    """Freshness left the wire (`Presence` has `observed_at`, no `stale`), so a `p.stale` branch here
+    would be a line that can never render — the defect this file exists to catch in unbuilt JS."""
+    text = PLUGIN_JS.read_text(encoding="utf-8")
+    # A property, not the English word: the timeline cache legitimately calls itself stale in prose.
+    hit = re.search(r"\.stale\b|\bstale\s*:", text)
+    assert hit is None, f"the desktop half must not read or invent a freshness flag: {text[max(0, hit.start() - 60):hit.end() + 20]!r}"
+    assert "frischen Frames" not in text

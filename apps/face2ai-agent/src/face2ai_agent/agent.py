@@ -32,7 +32,7 @@ class Face2AIAgent(Agent):
         """Rebuild the system prompt when the prompt-relevant situation changed. Returns True if updated.
 
         Every update inserts a config-update item into the chat context, so this is keyed on
-        state/identity/staleness/engine/store-count — not on the elapsed-seconds text or heartbeats.
+        state/identity/engine/store-count — not on the elapsed-seconds text or heartbeats.
         """
         key = self._memory.situation_key()
         if not force and key == self._situation_key:

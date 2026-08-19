@@ -21,6 +21,11 @@ One installable folder (`face2ai/`), two halves, both opt-in:
 
 `./deploy.sh` does both (rsync to `hermes-brain`, enable, restart, copy the desktop half).
 
+`GET /api/plugins/face2ai/presence` answers `connected` on **all three** branches (live proxy, persisted
+snapshot, nothing): the desktop half polls it every 4 s and replaces its `latest` wholesale, so a branch
+that omits the key paints the chip "Face2AI nicht verbunden" after a *successful* poll, until the next SSE
+frame corrects it. Pinned by `tests/test_plugin_api.py`.
+
 ## What Hermes gets
 
 - **Every turn**: `pre_llm_call` returns `{"context": "[face2ai] …"}` — appended to the user message
@@ -89,8 +94,8 @@ the state file) and `POST /api/presence/reset` on the Mac empties it here too, v
 ## Verify
 
 ```bash
-uv run --no-project --with pytest==9.0.2 pytest tests             # 26 passed, 1 skipped — no Hermes needed (tests/test_plugin_api.py skips as one module without fastapi)
-uv run --no-project --with pytest==9.0.2 --with fastapi --with httpx pytest tests   # 30 incl. the 4 /timeline proxy tests
+uv run --no-project --with pytest==9.0.2 pytest tests             # 27 passed, 1 skipped — no Hermes needed (tests/test_plugin_api.py skips as one module without fastapi)
+uv run --no-project --with pytest==9.0.2 --with fastapi --with httpx pytest tests   # 32 incl. the 5 dashboard-API tests (4 /timeline + /presence connected)
 cp face2ai/desktop/plugin.js "$TMPDIR/plugin.mjs" && node --check "$TMPDIR/plugin.mjs"   # JSX gate: `node --check plugin.js` does NOT fail on JSX (module-syntax detection swallows it); the .mjs copy does, and tests/test_desktop_plugin.py greps for it
 ssh hermes-brain 'bash -lc "hermes plugins list | grep face2ai; curl -s 127.0.0.1:8765/api/presence"'
 curl -s -H "Authorization: Bearer <dashboard token>" http://127.0.0.1:9119/api/plugins/face2ai/health   # via the 9119 tunnel

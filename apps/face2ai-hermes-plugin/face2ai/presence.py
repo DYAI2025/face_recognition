@@ -171,7 +171,6 @@ class Presence:
     display_name: str | None = None
     faces: int = 0
     since: datetime | None = None
-    stale: bool = False
     mood: str | None = None  # best-effort hint ("wirkt …"), never a fact; None = nothing to say
     valence: float | None = None  # -1..1
     arousal: float | None = None  # -1..1
@@ -186,7 +185,6 @@ class Presence:
             display_name=payload.get("display_name"),
             faces=int(payload.get("faces") or 0),
             since=_parse_time(payload.get("since")),
-            stale=bool(payload.get("stale", False)),
             mood=mood if isinstance(mood, str) and mood else None,
             valence=_number(payload.get("valence")),
             arousal=_number(payload.get("arousal")),
@@ -335,7 +333,11 @@ class PresenceStore:
 
 
 def describe(store: PresenceStore, *, now: datetime | None = None, language: str = "de") -> str:
-    """One or two plain sentences for the model — honest about staleness and gaps."""
+    """One or two plain sentences for the model — honest about what is known and what is not.
+
+    Freshness is not one of them: ``context_line`` withholds the whole line when the last frame is
+    older than its budget, which is the single place this plugin judges how fresh presence is.
+    """
     now = now or datetime.now(timezone.utc)
     snap = store.snapshot()
     de = language.lower().startswith("de")
@@ -361,8 +363,8 @@ def describe(store: PresenceStore, *, now: datetime | None = None, language: str
     else:
         text = (f"{p.get('faces', 0)} Personen stehen vor der Kamera{for_text}; bei mehreren Gesichtern ordnet Face2AI keine Identität zu."
                 if de else f"{p.get('faces', 0)} people are in front of the camera{for_text}; Face2AI does not attribute identity with several faces.")
-    if p.get("stale"):
-        text += " (Keine frischen Frames – der Browser-Tab pausiert vielleicht.)" if de else " (No fresh frames lately — the browser tab may be paused.)"
+    # No freshness sentence here: this plugin's freshness owner is ``context_line(max_age_seconds=…)``,
+    # which withholds the whole line from its own clock (``last_frame_at``) rather than annotating it.
     if snap.get("engine_available") is False:
         text += " Die Erkennungs-Engine meldet sich als nicht verfügbar." if de else " The recognition engine reports itself unavailable."
     mood = mood_sentence(p.get("mood"), p.get("valence"), p.get("arousal"), language=language, subject=p.get("display_name") if state == "KNOWN" else None)

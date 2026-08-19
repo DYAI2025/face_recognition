@@ -73,7 +73,7 @@ function onFrame(frame) {
     if (data && data.presence) latest = { ...latest, source: 'live', presence: data.presence, connected: true }
   } else if (event === 'presence' && data) {
     // A transition starts a fresh, mood-less presence (the mood that ended arrives as its own `mood` frame).
-    latest = { ...latest, source: 'live', connected: true, presence: { state: data.to_state, identity_id: data.identity_id, display_name: data.display_name, faces: data.faces, since: data.at, stale: false } }
+    latest = { ...latest, source: 'live', connected: true, presence: { state: data.to_state, identity_id: data.identity_id, display_name: data.display_name, faces: data.faces, since: data.at } }
     history = [...history.slice(-29), data]
   } else if (event === 'mood' && data) {
     // Hint began/changed/ended (`to_mood: null`); never a transition, never a reaction.
@@ -242,7 +242,7 @@ function Pane() {
       jsxs('div', {
         children: [
           jsx('div', { className: `text-2xl font-semibold ${TONE_CLASS[tone]}`, children: text }),
-          jsx('div', { className: 'text-(--ui-text-tertiary)', children: `${p.state || 'NO_SIGNAL'} · ${p.faces || 0} ${p.faces === 1 ? 'Gesicht' : 'Gesichter'}${p.since ? ' · seit ' + fmtTime(p.since) : ''}${p.stale ? ' · keine frischen Frames' : ''}` }),
+          jsx('div', { className: 'text-(--ui-text-tertiary)', children: `${p.state || 'NO_SIGNAL'} · ${p.faces || 0} ${p.faces === 1 ? 'Gesicht' : 'Gesichter'}${p.since ? ' · seit ' + fmtTime(p.since) : ''}` }),
           moodLabel(p) ? jsx('div', { className: 'text-[0.75rem] text-(--ui-text-tertiary)', title: HEDGE_TITLE, children: moodLabel(p) }) : null,
         ],
       }),

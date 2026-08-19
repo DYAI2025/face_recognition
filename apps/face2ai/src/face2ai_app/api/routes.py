@@ -136,7 +136,7 @@ def _observe_expression(request: Request, event: RecognitionEvent, now: datetime
     ``/api/recognize`` (warned once, then debug).
     """
     tracker = _presence(request)
-    presence = tracker.snapshot(now)
+    presence = tracker.snapshot()
     key = f"{presence.state}:{presence.identity_id or ''}"
     who = {"identity_id": presence.identity_id, "display_name": presence.display_name}
     # toggle-off race: a frame that left the browser before the toggle must not restart affect/actions

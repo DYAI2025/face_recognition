@@ -421,7 +421,7 @@ function stopCamera() {
   renderIdentity(offlineView());
   clearExpression();
   setLoopIndicator();
-  api.resetPresence().catch(() => { /* best-effort; the backend marks presence stale and expires it after a few seconds */ });
+  api.resetPresence().catch(() => { /* best-effort; the backend expires a presence without frames after a few seconds */ });
 }
 
 function togglePause() {

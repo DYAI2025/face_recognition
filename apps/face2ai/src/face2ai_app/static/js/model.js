@@ -79,11 +79,41 @@ export function projectBox(box, frame, view) {
   };
 }
 
-/** Greeting policy: a newly seen identity is greeted at once, the same identity only after the cooldown. */
-export function shouldGreet(last, identityId, now, cooldownMs) {
+export const GREETING_MEMORY_MAX = 32;  // identities remembered for the cooldown; see shouldGreet
+
+/**
+ * Greeting policy: a newly seen identity is greeted at once, the same identity again only once its
+ * own cooldown has passed. `greeted` is a `Map(identityId -> lastGreetedAt)` and is mutated here —
+ * a single last-identity slot let two enrolled people bypass the cooldown completely, because each
+ * arrival overwrote the other's timestamp and every swap read as "a new identity".
+ *
+ * Bounded to `max` entries so a long session cannot grow it without limit: the entry greeted longest
+ * ago is evicted first (a greeting re-inserts its key, and a `Map` iterates in insertion order). The
+ * cost of that bound is stated rather than hidden — an evicted identity is greeted once more the next
+ * time it appears, which for 33 people in one room is the right trade against unbounded memory.
+ */
+export function shouldGreet(greeted, identityId, now, cooldownMs, max = GREETING_MEMORY_MAX) {
   if (!identityId) return false;
-  if (last.lastIdentityId !== identityId) return true;
-  return now - last.lastAt >= cooldownMs;
+  const last = greeted.get(identityId);
+  if (Number.isFinite(last) && now - last < cooldownMs) return false;
+  greeted.delete(identityId);
+  greeted.set(identityId, now);
+  // Math.max(1, …): `keep` of 0 would make this loop delete the entry it just recorded.
+  const keep = Number.isFinite(max) ? Math.max(1, Math.trunc(max)) : greeted.size;
+  while (greeted.size > keep) greeted.delete(greeted.keys().next().value);
+  return true;
+}
+
+/**
+ * One-line state of the live event stream for the Context card, from what `subscribeEvents` reports.
+ * It says what this page is doing — never that the server is broken, which the page cannot know.
+ */
+export function describeEventsStatus(info) {
+  if (!info) return 'Live';
+  if (info.unsupported) return 'Unavailable · this browser has no EventSource';
+  if (!info.closed) return 'Reconnecting';  // the connection dropped; the platform retries it itself
+  const seconds = Number.isFinite(info.retryInMs) ? Math.max(1, Math.round(info.retryInMs / 1000)) : null;
+  return seconds === null ? 'Stream closed · retrying' : `Stream closed · retrying in ${seconds} s`;
 }
 
 /** Map a getUserMedia failure to the pill/context wording; only permission problems read as "blocked". */

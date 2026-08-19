@@ -30,6 +30,21 @@ def _js_files() -> list[Path]:
     return sorted(JS_DIR.glob("*.js"))
 
 
+def _js_function_body(source: str, signature: str) -> str:
+    """Text of a top-level function in one of the shell's modules.
+
+    A source assertion, not a behavioural test: app.js is DOM-bound (it reads `document` at import
+    time), so the rules below cannot be exercised with `node --test` without extracting the whole
+    orchestrator. What *is* extractable already lives in model.js and is tested there; what remains
+    here is where an assignment sits relative to an `await` — a question about the source itself.
+    Top-level functions in these modules close with a `}` in the first column.
+    """
+    assert signature in source, f"{signature} not found"
+    start = source.index(signature)
+    end = source.index("\n}\n", start)
+    return source[start:end]
+
+
 def test_index_is_served_and_declares_module_entry(client):
     response = client.get("/")
     assert response.status_code == 200
@@ -87,6 +102,60 @@ def test_consent_is_enforced_by_client_and_sent_to_the_api():
     api_js = (JS_DIR / "api.js").read_text(encoding="utf-8")
     assert "if (!consent)" in app_js, "client-side consent guard missing"
     assert re.search(r"consent:\s*consent \? 'true' : 'false'", api_js), "consent flag not sent as query param"
+
+
+def test_enrollment_dialog_is_reset_on_every_close_not_only_on_success():
+    """A dialog closed with Escape after a failed enrollment must leave nothing behind.
+
+    Measured before the fix: name and consent were cleared only on the success path, so the next
+    LEARN click opened the dialog with the previous person's name and a pre-ticked biometric consent
+    box — one click enrolled a *different* person as `display_name=Alice&consent=true`.
+    """
+    app_js = (JS_DIR / "app.js").read_text(encoding="utf-8")
+    closed = _js_function_body(app_js, "function onEnrollDialogClosed()")
+    assert "resetEnrollForm()" in closed, "every close path (submit, cancel, Escape) must reset the form"
+    reset = _js_function_body(app_js, "function resetEnrollForm()")
+    assert "els.displayName.value = ''" in reset, "the display name survives the close"
+    assert "els.consent.checked = false" in reset, "consent is biometric consent: it must never be pre-ticked"
+    assert "state.enrollFrozen = null" in reset, "the frozen frame must not outlive the dialog"
+    # One owner: the success path must not keep a second copy of the reset that can drift from this one.
+    assert app_js.count("els.consent.checked = false") == 1
+    assert app_js.count("els.displayName.value = ''") == 1
+
+
+def test_the_frame_and_the_event_it_produced_are_published_as_one_pair():
+    """A LEARN click during an in-flight request must not freeze frame N+1 with frame N's event.
+
+    The loop runs every 450 ms and a recognize call takes ~160 ms, so a click landing inside that
+    window used to freeze the newest frame together with the previous frame's event — the dialog then
+    decided "one unknown face" from one frame and enrolled a different one.
+    """
+    app_js = (JS_DIR / "app.js").read_text(encoding="utf-8")
+    tick = _js_function_body(app_js, "async function tick()")
+    assert "state.latest" not in tick, "tick() must publish nothing while its own request is in flight"
+    handled = _js_function_body(app_js, "function handleRecognition(blob, event)")
+    assert re.search(r"state\.latest = \{ blob, event \}", handled), "frame and event are one assignment"
+    opened = _js_function_body(app_js, "function openEnrollDialog()")
+    assert "state.enrollFrozen = state.latest" in opened, "the dialog freezes the pair, not two fields"
+    for split in ("state.lastBlob", "state.lastEvent", "state.enrollBlob", "state.enrollEvent"):
+        assert split not in app_js, f"{split}: a frame and its event must not live in separate fields"
+
+
+def test_the_live_event_stream_recovers_from_a_connection_left_closed():
+    """Per the EventSource spec a non-2xx status or a wrong content-type *fails* the connection and
+    leaves `readyState` CLOSED; only a dropped connection reconnects on its own. Reasoned from the
+    spec, not from a browser session — the client's own behaviour under both failures is pinned
+    against a fake EventSource in tests/js/events.test.mjs.
+    """
+    events_js = (JS_DIR / "events.js").read_text(encoding="utf-8")
+    assert "readyState" in events_js, "the two failure kinds are only distinguishable by readyState"
+    assert "EventSource reconnects by itself" not in events_js, "that comment is true only for a dropped connection"
+    app_js = (JS_DIR / "app.js").read_text(encoding="utf-8")
+    assert "onOpen:" in app_js, "the shell must notice when the stream comes back"
+    assert "describeEventsStatus(" in app_js, "the stream state belongs in the Context card, not only in the log"
+    html = INDEX.read_text(encoding="utf-8")
+    row = re.search(r"<div class=\"context-row\"><span>Live events</span><span id=\"eventsContext\">([^<]*)</span></div>", html)
+    assert row, "the Context card has no row for the live event stream"
 
 
 def test_dialog_default_submit_buttons_are_the_primary_actions():

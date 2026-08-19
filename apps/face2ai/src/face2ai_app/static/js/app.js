@@ -5,7 +5,7 @@ import * as api from './api.js';
 import { CameraController } from './camera.js';
 import { decryptText, installAtmosphere, installMagnets, installSpotlights } from './effects.js';
 import { subscribeEvents } from './events.js';
-import { allowActionEntry, axisPercent, describeAction, describeCameraError, describeEvent, describeExpression, formatAxis, isFreshEntry, offlineView, pushSample, shouldGreet, sparklinePoints, transitionKey } from './model.js';
+import { allowActionEntry, axisPercent, describeAction, describeCameraError, describeEvent, describeEventsStatus, describeExpression, formatAxis, isFreshEntry, offlineView, pushSample, shouldGreet, sparklinePoints, transitionKey } from './model.js';
 
 const RECOGNIZE_INTERVAL_MS = 450;
 const RECOGNIZE_ERROR_BACKOFF_MS = 1500;
@@ -26,22 +26,20 @@ const state = {
   inflight: false,
   timer: null,
   frame: 0,
-  lastBlob: null,
-  lastEvent: null,
+  latest: null,        // { blob, event }: the frame that was sent and the event it produced, published together
   lastTransition: null,
   engine: { known: false, available: false },
   cooldownMs: 0,
-  greeting: { lastIdentityId: null, lastAt: 0 },
+  greeted: new Map(),  // identity id -> last greeting; one cooldown per person (model.js: shouldGreet)
   events: 0,
   lastErrorText: null,
   enrolling: false,     // true while the enroll dialog is open or the enroll request is in flight
-  enrollBlob: null,     // frame + event frozen when the dialog opened
-  enrollEvent: null,
+  enrollFrozen: null,   // the { blob, event } pair frozen when the dialog opened
   agentConnected: false, // a voice agent subscribes to /api/events; it then owns the spoken greeting
   expression: { available: false, reason: null, enabled: false }, // opt-in mood hints (Stage 1), mirrored from /api/status
   affect: [],            // valence samples from this page's own frames → tile sparkline (Stage 2); mood/action log entries come from the server stream
   actionLogged: new Map(), // action label -> last time it was shown in the log (display rate limit, not a re-derivation)
-  eventsWarned: false,   // "Live events unavailable" is logged once; EventSource keeps reconnecting on its own
+  eventsWarned: false,   // one log entry per outage (retries flood the handler); cleared when the stream opens again
 };
 
 const IDLE_VIEW = describeEvent({ state: 'NO_FACE' });
@@ -206,7 +204,7 @@ function applyEngine(available, reason) {
     els.engineContext.textContent = reason ? `Offline · ${reason}` : 'Offline';
     setRecognitionValue('Offline', true);
     camera.clearOverlay();
-    state.lastEvent = null;
+    state.latest = null;
     if (state.cameraOn) renderIdentity(offlineView(reason || 'engine unavailable'));
     els.learnButton.disabled = true;
     clearExpression();
@@ -271,13 +269,14 @@ async function tick() {
   try {
     const blob = await camera.snapshot();
     if (!blob || session !== state.session) return;
-    state.lastBlob = blob;
     state.frame += 1;
     els.frameInfo.textContent = `FRAME ${String(state.frame).padStart(4, '0')}`;
+    // Nothing is published here: a frame whose event has not arrived yet must never become "the
+    // latest frame", or a LEARN click landing inside this await freezes it with the previous event.
     const { event, agentConnected } = await api.recognize(blob);
     if (session !== state.session || state.paused || state.enrolling) return; // stale result: drop it
     applyAgent(agentConnected); // per-frame ownership signal, fresher than the 5 s status poll
-    handleRecognition(event);
+    handleRecognition(blob, event);
   } catch (error) {
     if (session !== state.session || state.paused) return;
     delay = RECOGNIZE_ERROR_BACKOFF_MS;
@@ -288,8 +287,9 @@ async function tick() {
   }
 }
 
-function handleRecognition(event) {
-  state.lastEvent = event;
+/** The frame and the event it produced are published in one assignment; they must never drift apart. */
+function handleRecognition(blob, event) {
+  state.latest = { blob, event };
   state.lastErrorText = null;
   const view = describeEvent(event);
   camera.drawFaces(Array.isArray(event.faces) ? event.faces : []);
@@ -315,7 +315,7 @@ function handleRecognition(event) {
 
 function handleRecognitionError(error) {
   camera.clearOverlay();
-  state.lastEvent = null;
+  state.latest = null;
   clearExpression();
   if (error.status === 503) {
     // Engine unavailable: the server said so explicitly; applyEngine renders the offline view.
@@ -331,9 +331,8 @@ function handleRecognitionError(error) {
 }
 
 function greet(face) {
-  const now = Date.now();
-  if (!shouldGreet(state.greeting, face.identity_id, now, state.cooldownMs)) return;
-  state.greeting = { lastIdentityId: face.identity_id, lastAt: now };
+  // One cooldown per identity: shouldGreet records the greeting itself (and bounds what it remembers).
+  if (!shouldGreet(state.greeted, face.identity_id, Date.now(), state.cooldownMs)) return;
   const name = face.display_name || 'there';
   if ('speechSynthesis' in window) {
     speechSynthesis.cancel();
@@ -377,7 +376,7 @@ async function startCamera() {
   state.paused = false;
   state.frame = 0;
   state.lastTransition = null;
-  state.lastEvent = null;
+  state.latest = null;
   clearExpression();
   els.stage.classList.add('camera-on');
   els.centerState.inert = true;
@@ -407,8 +406,7 @@ function stopCamera() {
   camera.stop();
   state.cameraOn = false;
   state.paused = false;
-  state.lastBlob = null;
-  state.lastEvent = null;
+  state.latest = null;
   els.stage.classList.remove('camera-on');
   els.centerState.inert = false;
   els.visionToggle.title = 'Activate vision';
@@ -432,7 +430,7 @@ function togglePause() {
   if (state.paused) {
     clearTimeout(state.timer);
     camera.clearOverlay();
-    state.lastEvent = null;
+    state.latest = null;
     api.resetPresence().catch(() => {}); // no frames while paused: subscribers should see NO_SIGNAL now, not after expiry
     els.pauseLabel.textContent = 'Resume vision';
     setRecognitionValue('Paused', true);
@@ -451,10 +449,9 @@ function togglePause() {
 // ---------- enrollment ----------
 
 function openEnrollDialog() {
-  if (!state.lastEvent || !state.lastBlob) return;
-  // Freeze the frame and event the user is enrolling; the loop pauses while the dialog is open.
-  state.enrollBlob = state.lastBlob;
-  state.enrollEvent = state.lastEvent;
+  if (!state.latest) return;
+  // Freeze the frame *and the event it produced* as one pair; the loop pauses while the dialog is open.
+  state.enrollFrozen = state.latest;
   state.enrolling = true;
   clearTimeout(state.timer);
   els.enrollError.hidden = true;
@@ -473,21 +470,20 @@ async function submitEnrollment(event) {
   event.preventDefault();
   const name = els.displayName.value.trim();
   const consent = els.consent.checked;
-  const frozen = describeEvent(state.enrollEvent || {});
+  const pair = state.enrollFrozen;
+  const frozen = describeEvent(pair?.event || {});
   if (!name) { showEnrollError('Enter a display name.'); els.displayName.focus(); return; }
   if (!consent) { showEnrollError('Explicit consent is required before a face encoding is stored.'); els.consent.focus(); return; }
-  if (!state.enrollBlob || frozen.state !== 'UNKNOWN' || !frozen.canEnroll) {
+  if (!pair?.blob || frozen.state !== 'UNKNOWN' || !frozen.canEnroll) {
     showEnrollError('Enrollment needs exactly one unknown face. Close this dialog and try again.');
     return;
   }
 
   els.enrollSubmit.disabled = true;
-  renderIdentity(describeEvent({ ...state.enrollEvent, state: 'LEARNING', can_enroll: false }));
+  renderIdentity(describeEvent({ ...pair.event, state: 'LEARNING', can_enroll: false }));
   try {
-    const record = await api.enroll(state.enrollBlob, name, consent);
-    els.enrollDialog.close('learned');
-    els.displayName.value = '';
-    els.consent.checked = false;
+    const record = await api.enroll(pair.blob, name, consent);
+    els.enrollDialog.close('learned'); // the close handler clears name, consent and the frozen pair
     addEvent('Identity learned', `${record.display_name} stored locally. Step out of frame and return to verify recognition.`);
     toast(`${record.display_name} stored locally.`);
     state.lastTransition = null;
@@ -502,10 +498,24 @@ async function submitEnrollment(event) {
   }
 }
 
+/**
+ * Everything the dialog collected, cleared in one place. The consent box is consent to store a
+ * biometric encoding: it must never be found already ticked, and the name must never be inherited —
+ * a dialog dismissed with Escape after a failed attempt would otherwise enrol the next person under
+ * the previous person's name with a consent nobody gave.
+ */
+function resetEnrollForm() {
+  els.displayName.value = '';
+  els.consent.checked = false;
+  els.enrollError.hidden = true;
+  els.enrollError.textContent = '';
+  state.enrollFrozen = null;
+}
+
+/** Fires on every close path: submit, Cancel, Escape. */
 function onEnrollDialogClosed() {
   state.enrolling = false;
-  state.enrollBlob = null;
-  state.enrollEvent = null;
+  resetEnrollForm();
   setLoopIndicator();
   schedule(0);
 }
@@ -535,6 +545,7 @@ function identityRow(item) {
       addEvent('Identity deleted', `${item.display_name} removed from the local store.`);
       toast(`${item.display_name} deleted.`);
       state.lastTransition = null;
+      state.greeted.delete(item.id); // a deleted person keeps no slot in the greeting memory
     } catch (error) {
       remove.disabled = false;
       toast(`Delete failed: ${error.message}`);
@@ -590,7 +601,7 @@ async function submitErase(event) {
     addEvent('Identity store erased', `${result.deleted} identit${result.deleted === 1 ? 'y' : 'ies'} removed from this device.`);
     toast('Local identity store erased.');
     state.lastTransition = null;
-    state.greeting = { lastIdentityId: null, lastAt: 0 };
+    state.greeted.clear(); // nobody is enrolled any more: no cooldown may survive the erase
     if (els.identityDialog.open) {
       await renderIdentities();
       focusInDrawer(0);
@@ -629,7 +640,7 @@ document.addEventListener('visibilitychange', () => {
 // Page going away with the camera on: presence subscribers should not wait for expiry.
 window.addEventListener('pagehide', () => { if (state.cameraOn) api.resetPresenceBeacon(); });
 window.addEventListener('resize', () => {
-  if (state.lastEvent && loopAllowed()) camera.drawFaces(state.lastEvent.faces || []);
+  if (state.latest && loopAllowed()) camera.drawFaces(state.latest.event.faces || []);
 });
 
 function tickClock() { els.clock.textContent = nowTime(); }
@@ -664,12 +675,20 @@ subscribeEvents({
     const described = describeAction(a, EXPRESSION_LANG);
     if (described) addEvent('Expression', `${a.display_name || 'someone'}: ${described.label}`);
   },
+  onOpen: () => {
+    els.eventsContext.textContent = describeEventsStatus(null);
+    if (!state.eventsWarned) return;
+    state.eventsWarned = false; // a later outage is worth logging again
+    addEvent('Live events restored', 'The event stream is connected again; mood and expression entries resume.');
+  },
   onError: (info) => {
-    // EventSource retries by itself; say so once instead of flooding the log on every attempt.
+    // Retries flood this handler, so the log gets one entry per outage while the Context row keeps
+    // the current state. A closed connection is retried by events.js; a dropped one by the platform.
+    els.eventsContext.textContent = describeEventsStatus(info);
     if (state.eventsWarned) return;
     state.eventsWarned = true;
     addEvent('Live events unavailable', info?.unsupported
       ? 'This browser has no EventSource, so mood and expression entries stay off.'
-      : 'Mood and expression entries pause until the stream reconnects.');
+      : 'Mood and expression entries pause until the stream is back.');
   },
 });

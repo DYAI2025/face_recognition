@@ -3,11 +3,13 @@ import { test } from 'node:test';
 
 import {
   ACTION_LOG_MIN_MS,
+  GREETING_MEMORY_MAX,
   allowActionEntry,
   axisPercent,
   describeAction,
   describeCameraError,
   describeEvent,
+  describeEventsStatus,
   describeExpression,
   formatAxis,
   formatDuration,
@@ -102,11 +104,45 @@ test('transitionKey changes only when state or identity changes', () => {
 
 test('shouldGreet greets a new identity immediately and the same identity only after cooldown', () => {
   const cooldown = 15_000;
-  assert.equal(shouldGreet({ lastIdentityId: null, lastAt: 0 }, 'id-1', 1_000, cooldown), true);
-  assert.equal(shouldGreet({ lastIdentityId: 'id-1', lastAt: 1_000 }, 'id-1', 5_000, cooldown), false);
-  assert.equal(shouldGreet({ lastIdentityId: 'id-1', lastAt: 1_000 }, 'id-1', 16_001, cooldown), true);
-  assert.equal(shouldGreet({ lastIdentityId: 'id-1', lastAt: 1_000 }, 'id-2', 1_100, cooldown), true);
-  assert.equal(shouldGreet({ lastIdentityId: 'id-1', lastAt: 1_000 }, null, 99_000, cooldown), false);
+  const greeted = new Map();
+  assert.equal(shouldGreet(greeted, 'id-1', 1_000, cooldown), true);
+  assert.equal(shouldGreet(greeted, 'id-1', 5_000, cooldown), false);
+  assert.equal(shouldGreet(greeted, 'id-1', 16_001, cooldown), true);
+  assert.equal(shouldGreet(greeted, 'id-2', 16_100, cooldown), true);
+  assert.equal(shouldGreet(new Map(), null, 99_000, cooldown), false); // no identity: nothing to greet
+});
+
+test('the cooldown is kept per identity, so two enrolled people cannot greet each other free', () => {
+  // The one-slot version stored only the last identity, so Ada arriving reset Grace's cooldown and
+  // back: two people alternating in front of the camera were greeted on every single swap.
+  const cooldown = 15_000;
+  const greeted = new Map();
+  assert.equal(shouldGreet(greeted, 'ada', 1_000, cooldown), true);
+  assert.equal(shouldGreet(greeted, 'grace', 1_400, cooldown), true);
+  for (const [identity, at] of [['ada', 1_800], ['grace', 2_200], ['ada', 2_600], ['grace', 3_000]]) {
+    assert.equal(shouldGreet(greeted, identity, at, cooldown), false, `${identity} @ ${at}`);
+  }
+  // Each of them is greeted again only once its own cooldown has passed.
+  assert.equal(shouldGreet(greeted, 'ada', 16_000, cooldown), true);
+  assert.equal(shouldGreet(greeted, 'grace', 16_000, cooldown), false); // greeted 400 ms later than ada
+  assert.equal(shouldGreet(greeted, 'grace', 16_400, cooldown), true);
+});
+
+test('the greeting memory is bounded and drops the identity greeted longest ago', () => {
+  const cooldown = 60_000;
+  const greeted = new Map();
+  for (let i = 0; i < GREETING_MEMORY_MAX; i += 1) {
+    assert.equal(shouldGreet(greeted, `id-${i}`, 1_000 + i, cooldown), true);
+  }
+  assert.equal(greeted.size, GREETING_MEMORY_MAX);
+  assert.equal(shouldGreet(greeted, 'id-0', 2_000, cooldown), false); // still inside its own cooldown
+
+  assert.equal(shouldGreet(greeted, 'id-new', 2_100, cooldown), true);
+  assert.equal(greeted.size, GREETING_MEMORY_MAX, 'the map must not grow past its cap');
+  assert.equal(greeted.has('id-0'), false, 'the identity greeted longest ago is evicted first');
+  assert.equal(greeted.has('id-1'), true);
+  // The visible cost of the bound, stated rather than hidden: an evicted identity is greeted once more.
+  assert.equal(shouldGreet(greeted, 'id-0', 2_200, cooldown), true);
 });
 
 test('describeEvent pins fallback messages and names known people in the KNOWN message', () => {
@@ -121,8 +157,19 @@ test('describeEvent pins fallback messages and names known people in the KNOWN m
 });
 
 test('shouldGreet cooldown boundary is inclusive', () => {
-  assert.equal(shouldGreet({ lastIdentityId: 'id-1', lastAt: 1_000 }, 'id-1', 16_000, 15_000), true);
-  assert.equal(shouldGreet({ lastIdentityId: 'id-1', lastAt: 1_000 }, 'id-1', 15_999, 15_000), false);
+  assert.equal(shouldGreet(new Map([['id-1', 1_000]]), 'id-1', 16_000, 15_000), true);
+  assert.equal(shouldGreet(new Map([['id-1', 1_000]]), 'id-1', 15_999, 15_000), false);
+});
+
+test('describeEventsStatus says what the client is doing, never that the server is broken', () => {
+  assert.equal(describeEventsStatus(null), 'Live');
+  assert.equal(describeEventsStatus({ unsupported: true }), 'Unavailable · this browser has no EventSource');
+  // A connection the browser left CLOSED never retries on its own — the shell says when it will try again.
+  assert.equal(describeEventsStatus({ unsupported: false, closed: true, retryInMs: 4_000 }), 'Stream closed · retrying in 4 s');
+  assert.equal(describeEventsStatus({ unsupported: false, closed: true, retryInMs: 400 }), 'Stream closed · retrying in 1 s');
+  assert.equal(describeEventsStatus({ unsupported: false, closed: true, retryInMs: null }), 'Stream closed · retrying');
+  // A dropped connection: the platform is already retrying, so the shell only reports it.
+  assert.equal(describeEventsStatus({ unsupported: false, closed: false, retryInMs: null }), 'Reconnecting');
 });
 
 test('offlineView distinguishes camera-off from engine-unavailable and never claims a face', () => {

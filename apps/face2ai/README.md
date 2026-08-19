@@ -36,7 +36,75 @@ uv run --project apps/face2ai face2ai
 
 Open `http://127.0.0.1:8765`.
 
+`uv.lock` is committed and is the only exact pin of the native stack: it resolves `dlib` to **20.0.1**
+with a sha256, while the fork's `setup.py` asks only for `dlib>=19.7`. Reproduce the environment with
+`uv sync --project apps/face2ai --frozen --group dev --extra recognition`; `--frozen` fails instead of
+silently re-resolving. (This reverses an earlier decision that the lock is never committed — see
+`docs/architecture/ADR-005-macos-launcher.md`.)
+
 The `face_recognition` dependency is resolved from the repository root through `tool.uv.sources`. The temporary `setuptools<82` compatibility pin exists because the current model package still relies on `pkg_resources`; it is explicit S0 compatibility debt, not a permanent design choice.
+
+## Configuration
+
+Every setting is an environment variable read once by `Settings.from_env()` (`src/face2ai_app/config.py`).
+There is no config file. This table is the **whole** surface — 18 variables, checked against the source
+with `grep -o 'FACE2AI_[A-Z_]*' apps/face2ai/src/face2ai_app/config.py | sort -u | wc -l` (18). A value that
+does not parse as the stated type raises at startup, so a typo fails visibly instead of silently falling
+back to the default.
+
+| Variable | Default | Range | Enforced? |
+|---|---|---|---|
+| `FACE2AI_HOST` | `127.0.0.1` | any bind address. Loopback is deliberate: the app has no authentication and must not be reachable from the network | n/a |
+| `FACE2AI_PORT` | `8765` | 1..65535 | **no** |
+| `FACE2AI_DATA_DIR` | `~/.face2ai` | a directory; `~` is expanded. Holds `identities.json`, and `face2ai.log`/`face2ai.pid` when started through `scripts/face2ai-service.sh` | n/a |
+| `FACE2AI_MATCH_TOLERANCE` | `0.6` | `0 < t <= 2` — Euclidean distance between face encodings; larger is more permissive. Never shown as a confidence percentage | **no** |
+| `FACE2AI_MAX_FRAME_BYTES` | `5242880` (5 MiB) | `>= 1` — request-body limit for `POST /api/recognize` and `/api/enroll` | **no** |
+| `FACE2AI_GREETING_COOLDOWN_SECONDS` | `15` | `>= 0` — reported by `/api/status`; the browser enforces it | **no** |
+| `FACE2AI_PRESENCE_STABLE_TICKS` | `2` | `>= 1` — frames a presence must hold before it is published | yes |
+| `FACE2AI_PRESENCE_STALE_SECONDS` | `5` | `> 0` — a presence older than this expires to `NO_SIGNAL` | yes |
+| `FACE2AI_EVENTS_HEARTBEAT_SECONDS` | `15` | `> 0` — SSE `heartbeat` interval | yes |
+| `FACE2AI_EVENTS_BUFFER_SIZE` | `200` | `>= 1` — replay buffer for `Last-Event-ID` | yes |
+| `FACE2AI_EXPRESSION_ENABLED` | `false` | `1/true/yes/on` or `0/false/no/off`, case-insensitive; empty means default, anything else raises. Pre-enables only an *available* engine | yes |
+| `FACE2AI_EXPRESSION_MODELS_DIR` | `$FACE2AI_DATA_DIR/models` (`~/.face2ai/models`) | a directory; `~` is expanded. `face_landmarker.task` is expected here | n/a |
+| `FACE2AI_MOOD_STABLE_TICKS` | `3` | `>= 1` — consecutive frames a mood candidate must lead before it commits | yes |
+| `FACE2AI_MOOD_MIN_SCORE` | `0.5` | `0 < s <= 1` — EMA score a mood needs at commit | yes |
+| `FACE2AI_ACTION_ON_THRESHOLD` | `0.35` | `off < on <= 1` — blendshape group mean that starts a facial action | yes |
+| `FACE2AI_ACTION_OFF_THRESHOLD` | `0.2` | `0 < off < on` — and ends it (hysteresis) | yes |
+| `FACE2AI_ACTION_MIN_FRAMES` | `2` | `>= 1` — frames an action must persist before it is reported | yes |
+| `FACE2AI_TIMELINE_SECONDS` | `600` | `>= 10` — in-memory affect history window (never persisted) | yes |
+
+**Four knobs carry a documented range that nothing enforces yet** — the four marked **no** above. Measured at
+this commit: `Settings(port=70000)`, `match_tolerance=-1`, `max_frame_bytes=0` and
+`greeting_cooldown_seconds=-5` are all accepted (14 numeric fields, 10 range-checked in
+`Settings.__post_init__`, 4 not). Task 3 of `docs/plans/2026-08-19-boundary-contracts.md` closes them; until
+it lands, those four ranges are documentation, not a guarantee.
+
+This table itself has no executable owner either: nothing fails when the next knob is added and left
+undocumented — which is how 9 of these 18 came to be undocumented, and how `FACE2AI_HOST`, `FACE2AI_PORT` and
+`FACE2AI_MATCH_TOLERANCE` ended up described only in a wrapper directory outside every repository. A test
+asserting that every `FACE2AI_*` literal in `config.py` appears in this file belongs with the config tests.
+
+Read only by `scripts/face2ai-service.sh`, never by the application: `FACE2AI_START_TIMEOUT_SECONDS`
+(default `60`, how long `start` waits for `/healthz`) and `FACE2AI_STOP_TIMEOUT_SECONDS` (default `10`, how
+long `stop` waits after SIGTERM before SIGKILL).
+
+## Running it as a background service
+
+`scripts/face2ai-service.sh {start|stop|status}` owns the process from outside Python and is the unit the
+macOS launcher (`docs/architecture/ADR-005-macos-launcher.md`) is a thin shell over:
+
+```bash
+apps/face2ai/scripts/face2ai-service.sh start    # refuses to start a second one; waits for /healthz
+apps/face2ai/scripts/face2ai-service.sh status   # /healthz JSON on stdout, non-zero exit when down
+apps/face2ai/scripts/face2ai-service.sh stop     # SIGTERM, then SIGKILL after FACE2AI_STOP_TIMEOUT_SECONDS
+```
+
+Log `~/.face2ai/face2ai.log` (appended, with a banner per start), pid `~/.face2ai/face2ai.pid`, both under
+`$FACE2AI_DATA_DIR`. `start` is atomic — on timeout it prints the log tail, stops what it started and exits
+non-zero. `stop` is idempotent and **never kills a process it did not start**: if `/healthz` answers while the
+pid file records nothing alive, it refuses and exits non-zero, because that port may be held by a backend, a
+voice agent and an SSH tunnel this script knows nothing about. The SIGKILL escalation is not optional today:
+with one SSE subscriber attached the current process ignores SIGTERM (see §3 of the boundary-contracts plan).
 
 ## Expression hints (opt-in)
 
@@ -52,7 +120,7 @@ bash apps/face2ai/scripts/fetch-expression-models.sh      # face_landmarker.task
 
 `mediapipe` is pinned to 0.10.21 (1.0.1 aborts on macOS in `DrishtiMetalHelper`; the adapter uses the CPU delegate) and declares `numpy<2`, so `pyproject.toml` overrides numpy to 2.3.5 — verified working on the M1. Without the extra everything degrades cleanly: `expression_available:false` with a reason, toggle disabled, `faces[].expression` null, no `mood` events.
 
-Environment: `FACE2AI_EXPRESSION_ENABLED` (default `false`; pre-enables only an available engine), `FACE2AI_EXPRESSION_MODELS_DIR` (default `$FACE2AI_DATA_DIR/models`, i.e. `~/.face2ai/models`), `FACE2AI_MOOD_STABLE_TICKS` (3), `FACE2AI_MOOD_MIN_SCORE` (0.5), and for the Stage 2 dynamics (ADR-004) `FACE2AI_ACTION_ON_THRESHOLD` (0.35), `FACE2AI_ACTION_OFF_THRESHOLD` (0.2, must be `> 0` and `< on ≤ 1`), `FACE2AI_ACTION_MIN_FRAMES` (2, ≥ 1), `FACE2AI_TIMELINE_SECONDS` (600, ≥ 10).
+Environment: `FACE2AI_EXPRESSION_ENABLED`, `FACE2AI_EXPRESSION_MODELS_DIR`, `FACE2AI_MOOD_STABLE_TICKS`, `FACE2AI_MOOD_MIN_SCORE` and, for the Stage 2 dynamics (ADR-004), `FACE2AI_ACTION_ON_THRESHOLD`, `FACE2AI_ACTION_OFF_THRESHOLD`, `FACE2AI_ACTION_MIN_FRAMES`, `FACE2AI_TIMELINE_SECONDS`. Defaults and ranges live in one place: [Configuration](#configuration).
 
 API surface:
 

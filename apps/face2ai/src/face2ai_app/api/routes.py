@@ -39,6 +39,32 @@ router = APIRouter()
 
 EVENT_ROLE_AGENT = "agent"
 AGENT_HEADER = "X-Face2AI-Agent"  # "1"/"0" on recognize responses: fresh greeting-ownership signal for the browser
+SAME_ORIGIN = "same-origin"  # the only Sec-Fetch-Site value allowed to claim EVENT_ROLE_AGENT
+
+
+def _refuse_cross_origin_agent(role: str, sec_fetch_site: str | None) -> None:
+    """Only a same-origin caller may take greeting ownership via ``?role=agent``.
+
+    Subscribing as the agent makes the browser shell go deliberately silent (it leaves the spoken
+    greeting to the agent), so without this check any page the user happens to have open can reach
+    the port and switch the product's headline behaviour off. The port is reverse-tunnelled to a
+    VPS, so "loopback, therefore safe" is the wrong frame.
+
+    The discriminator is ``Sec-Fetch-Site``: browsers attach it to every request and a page cannot
+    forge it, while the real consumers (voice agent, Hermes plugin) drive httpx and never send it.
+    Absent header => not a browser => allowed. 403 rather than 401: the request is understood and
+    refused on origin, and no credential the caller could add would change that.
+    """
+    if role != EVENT_ROLE_AGENT or sec_fetch_site is None:
+        return
+    if sec_fetch_site.strip().lower() != SAME_ORIGIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"role={EVENT_ROLE_AGENT} needs a same-origin request; this one carries "
+                f"Sec-Fetch-Site: {sec_fetch_site}. Subscribe with another role to read the stream."
+            ),
+        )
 
 
 def _service(request: Request):
@@ -352,6 +378,7 @@ async def events(
     role: str = Query(default="client", min_length=1, max_length=32),
     after: int | None = Query(default=None, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    sec_fetch_site: str | None = Header(default=None, alias="Sec-Fetch-Site"),
 ) -> StreamingResponse:
     """Server-Sent Events: `hello`, then `presence` / `mood` / `action` / `store` events, `heartbeat` while idle.
 
@@ -361,7 +388,14 @@ async def events(
     Consumers such as the voice agent subscribe with ``?role=agent``; the browser then knows an
     agent is present (``/api/status.agent_connected``) and leaves greetings to it. Reconnects may
     pass ``Last-Event-ID`` (or ``?after=``) to replay buffered events.
+
+    ``?role=agent`` is refused with 403 for any request whose ``Sec-Fetch-Site`` is not
+    ``same-origin``, so a page from elsewhere cannot take greeting ownership; every other role is
+    unaffected.
     """
+    # Refuse before the StreamingResponse exists: once it is returned the 200 is already committed
+    # and ``stream()`` — which registers the subscription — runs with no way back.
+    _refuse_cross_origin_agent(role, sec_fetch_site)
     broker = _events(request)
     tracker = _presence(request)
     settings = _settings(request)

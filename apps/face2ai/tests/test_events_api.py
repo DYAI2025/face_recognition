@@ -215,6 +215,69 @@ def test_status_reports_agent_subscription_while_stream_is_open(live):
     assert live.client.get("/api/status").json()["agent_connected"] is False
 
 
+BROWSER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128.0 Safari/537.36"
+
+
+@pytest.mark.parametrize("site", ["cross-site", "same-site", "none"])
+def test_a_page_from_elsewhere_cannot_subscribe_as_the_agent(live, site):
+    """Greeting ownership is handed over by a query parameter, so without this check any page that
+    reaches the port can claim it: the browser shell then goes deliberately silent and a background
+    tab disables the product's headline behaviour. This port is reverse-tunnelled to a VPS
+    (project CLAUDE.md), so "loopback, therefore safe" is the wrong frame. A browser always sends
+    Sec-Fetch-Site; only ``same-origin`` may take the agent role."""
+    assert live.client.get("/api/status").json()["agent_connected"] is False
+    headers = {
+        "Origin": "https://evil.example",
+        "Referer": "https://evil.example/",
+        "Sec-Fetch-Site": site,
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "User-Agent": BROWSER_AGENT,
+        "Accept": "text/event-stream",
+    }
+    with live.client.stream("GET", "/api/events?role=agent", headers=headers) as response:
+        assert response.status_code == 403
+        response.read()
+        assert "same-origin" in response.json()["detail"]
+        assert site in response.json()["detail"]
+    status = live.client.get("/api/status").json()
+    assert status["agent_connected"] is False
+    assert status["event_subscribers"] == 0
+
+
+def test_the_real_agent_sends_no_sec_fetch_site_and_is_unaffected(live):
+    """httpx (voice agent, Hermes plugin) never sends the header — the check must not touch them."""
+    with live.client.stream("GET", "/api/events?role=agent", headers={"Accept": "text/event-stream"}) as response:
+        assert response.status_code == 200
+        assert "sec-fetch-site" not in {k.lower() for k in response.request.headers}
+        lines = response.iter_lines()  # keep the iterator alive: dropping it closes the stream
+        assert next(lines) == "event: hello"
+        status = live.client.get("/api/status").json()
+        assert status["agent_connected"] is True
+        assert status["event_subscribers"] == 1
+
+
+@pytest.mark.parametrize("role", ["browser", "agent"])
+def test_a_same_origin_browser_subscription_is_accepted(live, role):
+    """The shipped page subscribes with role=browser; a same-origin agent role stays allowed too."""
+    headers = {
+        "Origin": live.base_url,
+        "Referer": f"{live.base_url}/",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "User-Agent": BROWSER_AGENT,
+        "Accept": "text/event-stream",
+    }
+    with live.client.stream("GET", f"/api/events?role={role}", headers=headers) as response:
+        assert response.status_code == 200
+        lines = response.iter_lines()
+        assert next(lines) == "event: hello"
+        status = live.client.get("/api/status").json()
+        assert status["event_subscribers"] == 1
+        assert status["agent_connected"] is (role == "agent")
+
+
 def test_events_stream_carries_only_the_documented_keys(live, fake_engine, face):
     """ADR-002 §2: states, names, counts, timestamps — never frames, boxes, encodings or distances."""
     fake_engine.faces = [face]

@@ -17,7 +17,7 @@ from face2ai_app.adapters.json_identity_store import JsonIdentityStore
 from face2ai_app.adapters.mediapipe_expression import MediaPipeExpressionEngine
 from face2ai_app.api.routes import router
 from face2ai_app.config import Settings
-from face2ai_app.domain.errors import IdentityStoreCorrupted
+from face2ai_app.domain.errors import IdentityStoreCorrupted, IdentityStoreUnavailable
 from face2ai_app.services.actions import ActionTracker
 from face2ai_app.services.events import IdentityEventBroker
 from face2ai_app.services.identity_service import IdentityService
@@ -53,10 +53,12 @@ class RevalidatedStaticFiles(StaticFiles):
 
 def create_app(*, settings: Settings | None = None, engine=None, store=None, expression=None) -> FastAPI:
     app_settings = settings or Settings.from_env()
-    recognition_engine = engine or FaceRecognitionEngine()
+    recognition_engine = engine or FaceRecognitionEngine(max_frame_pixels=app_settings.max_frame_pixels)
     identity_store = store or JsonIdentityStore(app_settings.identity_store_path)
     # Always constructed: it is unavailable-not-crashing when the extra or the model asset is missing.
-    expression_engine = expression or MediaPipeExpressionEngine(app_settings.expression_models_dir)
+    expression_engine = expression or MediaPipeExpressionEngine(
+        app_settings.expression_models_dir, max_frame_pixels=app_settings.max_frame_pixels
+    )
     _log_engine("recognition", recognition_engine.available, recognition_engine.availability_reason)
     # Expression is opt-in: unavailable while nobody asked is information; unavailable while
     # FACE2AI_EXPRESSION_ENABLED is set is the one warning (the opt-in then stays off).
@@ -96,9 +98,17 @@ def create_app(*, settings: Settings | None = None, engine=None, store=None, exp
     app.state.history = AffectHistory(max_seconds=app_settings.timeline_seconds)
     app.state.events = IdentityEventBroker(buffer_size=app_settings.events_buffer_size)
 
+    # The store's closed error set, mapped once for every route that touches it: unusable data and
+    # an unreachable store are both "the service cannot answer right now", never a bad request.
     @app.exception_handler(IdentityStoreCorrupted)
     async def identity_store_corrupted_handler(
         request: Request, exc: IdentityStoreCorrupted
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(IdentityStoreUnavailable)
+    async def identity_store_unavailable_handler(
+        request: Request, exc: IdentityStoreUnavailable
     ) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 

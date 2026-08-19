@@ -44,6 +44,23 @@ jobs:
       - name: Browser model tests
         run: node --test 'apps/face2ai/tests/js/**/*.test.mjs'
 
+  # The one job that runs the port contracts against the *real* adapter. Without it the conformance
+  # suite only ever sees a double, which satisfies every obligation by construction — the systemic
+  # artifact would be green exactly where it cannot fail. FACE2AI_CONFORMANCE_REQUIRE_REAL turns the
+  # "recognition extra not installed" skip into a failure, so a broken install cannot pass quietly.
+  recognition-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # `face-recognition` pulls dlib, which is built from source here
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install the real recognition adapter
+        run: uv sync --project apps/face2ai --group dev --extra recognition
+      - name: Port conformance against the real adapter
+        env:
+          FACE2AI_CONFORMANCE_REQUIRE_REAL: '1'
+        run: uv run --project apps/face2ai pytest apps/face2ai/tests/test_port_conformance.py
+
   voice-agent:
     runs-on: ubuntu-latest
     steps:

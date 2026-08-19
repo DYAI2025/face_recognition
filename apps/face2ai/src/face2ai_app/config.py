@@ -7,6 +7,11 @@ from pathlib import Path
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 
+# Decoded-pixel budget per frame, enforced by every adapter *before* the frame is decoded (a 0.19 MiB
+# PNG can declare gigabytes of pixels). The browser's own snapshot is 640 px wide, so 4 MP is ~16x
+# generous. See apps/face2ai/tests/test_port_conformance.py for the obligation this number serves.
+DEFAULT_MAX_FRAME_PIXELS = 4_000_000
+
 
 def _env_bool(name: str, default: bool) -> bool:
     """Parse a boolean env var; unset/empty -> default, anything but true/false spellings fails visibly."""
@@ -29,6 +34,7 @@ class Settings:
     port: int = 8765
     match_tolerance: float = 0.6
     max_frame_bytes: int = 5 * 1024 * 1024
+    max_frame_pixels: int = DEFAULT_MAX_FRAME_PIXELS
     data_dir: Path = Path.home() / ".face2ai"
     greeting_cooldown_seconds: int = 15
     presence_stable_ticks: int = 2
@@ -45,6 +51,8 @@ class Settings:
     timeline_seconds: int = 600  # in-memory affect history window (never persisted)
 
     def __post_init__(self) -> None:
+        if self.max_frame_pixels < 1:
+            raise ValueError("FACE2AI_MAX_FRAME_PIXELS must be >= 1")
         if self.presence_stale_seconds <= 0:
             raise ValueError("FACE2AI_PRESENCE_STALE_SECONDS must be > 0")
         if self.events_heartbeat_seconds <= 0:
@@ -76,6 +84,7 @@ class Settings:
             port=int(os.getenv("FACE2AI_PORT", "8765")),
             match_tolerance=float(os.getenv("FACE2AI_MATCH_TOLERANCE", "0.6")),
             max_frame_bytes=int(os.getenv("FACE2AI_MAX_FRAME_BYTES", str(5 * 1024 * 1024))),
+            max_frame_pixels=int(os.getenv("FACE2AI_MAX_FRAME_PIXELS", str(DEFAULT_MAX_FRAME_PIXELS))),
             data_dir=data_dir,
             greeting_cooldown_seconds=int(os.getenv("FACE2AI_GREETING_COOLDOWN_SECONDS", "15")),
             presence_stable_ticks=int(os.getenv("FACE2AI_PRESENCE_STABLE_TICKS", "2")),

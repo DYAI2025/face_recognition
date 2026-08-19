@@ -8,21 +8,39 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from face2ai_app.domain.errors import IdentityStoreCorrupted
+from face2ai_app.domain.errors import IdentityStoreCorrupted, IdentityStoreUnavailable
 from face2ai_app.domain.models import IdentityRecord
 
 
 class JsonIdentityStore:
+    """JSON-file identity store honouring the port contract in ``face2ai_app.ports.identity_store``.
+
+    Its error set is closed and the two members mean different things: ``IdentityStoreCorrupted``
+    says the bytes are unusable (and they are never overwritten), ``IdentityStoreUnavailable`` says
+    the file could not be reached at all — the data may be perfectly fine behind a missing mount,
+    a permission change or a full disk. Both become HTTP 503; only the first is a data problem.
+    """
+
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = threading.RLock()
 
     def _read(self) -> list[IdentityRecord]:
-        if not self._path.exists():
-            return []
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            if not self._path.exists():
+                return []
+            text = self._path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise IdentityStoreCorrupted(
+                f"identity store is not valid UTF-8: {self._path}"
+            ) from exc
+        except OSError as exc:
+            raise IdentityStoreUnavailable(
+                f"identity store cannot be read: {self._path}: {exc}"
+            ) from exc
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
             raise IdentityStoreCorrupted(
                 f"identity store contains invalid JSON: {self._path}"
             ) from exc
@@ -38,21 +56,30 @@ class JsonIdentityStore:
             ) from exc
 
     def _write(self, records: list[IdentityRecord]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(
             [record.model_dump(mode="json") for record in records],
             ensure_ascii=False,
             indent=2,
         ) + "\n"
-        fd, temp_name = tempfile.mkstemp(
-            prefix="identities-", suffix=".json", dir=self._path.parent
-        )
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                prefix="identities-", suffix=".json", dir=self._path.parent
+            )
+        except OSError as exc:
+            raise IdentityStoreUnavailable(
+                f"identity store cannot be written: {self._path}: {exc}"
+            ) from exc
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, self._path)
+        except OSError as exc:
+            raise IdentityStoreUnavailable(
+                f"identity store cannot be written: {self._path}: {exc}"
+            ) from exc
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)

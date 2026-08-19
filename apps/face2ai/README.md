@@ -47,8 +47,8 @@ The `face_recognition` dependency is resolved from the repository root through `
 ## Configuration
 
 Every setting is an environment variable read once by `Settings.from_env()` (`src/face2ai_app/config.py`).
-There is no config file. This table is the **whole** surface — 18 variables, checked against the source
-with `grep -o 'FACE2AI_[A-Z_]*' apps/face2ai/src/face2ai_app/config.py | sort -u | wc -l` (18). A value that
+There is no config file. This table is the **whole** surface — 19 variables, checked against the source
+with `grep -o 'FACE2AI_[A-Z_]*' apps/face2ai/src/face2ai_app/config.py | sort -u | wc -l` (19). A value that
 does not parse as the stated type raises at startup, so a typo fails visibly instead of silently falling
 back to the default.
 
@@ -59,6 +59,7 @@ back to the default.
 | `FACE2AI_DATA_DIR` | `~/.face2ai` | a directory; `~` is expanded. Holds `identities.json`, and `face2ai.log`/`face2ai.pid` when started through `scripts/face2ai-service.sh` | n/a |
 | `FACE2AI_MATCH_TOLERANCE` | `0.6` | `0 < t <= 2` — Euclidean distance between face encodings; larger is more permissive. Never shown as a confidence percentage | **no** |
 | `FACE2AI_MAX_FRAME_BYTES` | `5242880` (5 MiB) | `>= 1` — request-body limit for `POST /api/recognize` and `/api/enroll` | **no** |
+| `FACE2AI_MAX_FRAME_PIXELS` | `4000000` (4 MP) | `>= 1` — decoded-pixel budget per frame, checked against the image header *before* decoding (a small file can declare an enormous image). Over the budget is `InvalidFrame` → HTTP 422 | yes |
 | `FACE2AI_GREETING_COOLDOWN_SECONDS` | `15` | `>= 0` — reported by `/api/status`; the browser enforces it | **no** |
 | `FACE2AI_PRESENCE_STABLE_TICKS` | `2` | `>= 1` — frames a presence must hold before it is published | yes |
 | `FACE2AI_PRESENCE_STALE_SECONDS` | `5` | `> 0` — a presence older than this expires to `NO_SIGNAL` | yes |

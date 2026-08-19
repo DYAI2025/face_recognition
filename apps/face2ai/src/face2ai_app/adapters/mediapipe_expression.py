@@ -1,8 +1,8 @@
 """Expression adapter: MediaPipe Face Landmarker (blendshapes + head pose) and EmotiEffLib
 (8 emotions + valence/arousal). Everything here is a mood *hint*, never a fact.
 
-Only numpy is imported at module level; mediapipe / emotiefflib / Pillow are imported lazily so the
-pure helpers stay importable and testable without the ``expression`` extra.
+Only numpy and the shared frame decoder are imported at module level; mediapipe / emotiefflib are
+imported lazily so the pure helpers stay importable and testable without the ``expression`` extra.
 """
 
 from __future__ import annotations
@@ -12,11 +12,12 @@ import math
 import os
 import threading
 from collections.abc import Sequence
-from io import BytesIO
 from pathlib import Path
 
 import numpy as np
 
+from face2ai_app.adapters.frame_decode import decode_frame
+from face2ai_app.config import DEFAULT_MAX_FRAME_PIXELS
 from face2ai_app.domain.models import EMOTIONS, Expression, FaceBox
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,8 @@ class MediaPipeExpressionEngine:
     touches the network; the engine is unavailable (never crashing) when the extra or an asset is missing.
     """
 
-    def __init__(self, models_dir: Path) -> None:
+    def __init__(self, models_dir: Path, max_frame_pixels: int = DEFAULT_MAX_FRAME_PIXELS) -> None:
+        self._max_frame_pixels = max_frame_pixels
         self._reason: str | None = None
         self._landmarker = None
         self._recognizer = None
@@ -195,9 +197,9 @@ class MediaPipeExpressionEngine:
         if not self.available or not boxes:
             return [None for _ in boxes]
         try:
-            from PIL import Image
-
-            arr = np.ascontiguousarray(np.asarray(Image.open(BytesIO(image_bytes)).convert("RGB"), dtype=np.uint8))
+            # Same decoder as the recognition adapter: one owner for the pixel budget and for
+            # EXIF orientation, so a frame is never analysed in two different coordinate spaces.
+            arr = decode_frame(image_bytes, self._max_frame_pixels)
             with self._lock:
                 result = self._landmarker.detect(self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=arr))
         except Exception as exc:

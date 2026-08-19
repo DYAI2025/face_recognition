@@ -19,6 +19,8 @@ The visual system reacts to real product state as reported by the API:
 - `MULTIPLE_FACES` -> no enrollment affordance, server `message` shown verbatim;
 - engine unavailable (`engine_available:false` or HTTP 503) -> explicit offline state with the server's reason, never synthetic fallback data;
 - API errors -> the server's `detail` text is surfaced (toast, form error, event stream), never collapsed into a generic state.
+- expression (opt-in, ADR-003) -> an "Expression" metric tile that starts as `off` and stays honest: while exactly one face is in frame it shows the server's per-frame hint as a hedged English phrase ("looks happy", "looks neutral"), valence/arousal as two small bars, and the caption "a hint, not a fact"; with no face, several faces or an unreadable face it shows `—`, toggled off it shows `off`; the toggle button ("Expression: off/on", `aria-pressed`) is disabled with the server's `expression_reason` in its title until `/api/status` says the engine is available, and its label follows `/api/status`, never the click. Tone: mint for a pleasant hint, neutral for neutral/surprise, amber for the rest — never red, expression is not an error state.
+- expression dynamics (ADR-004) -> under the two bars the tile carries a **valence sparkline**: a 120×24 line of this page's own last ~120 readings (≈ 70 s at the 450 ms loop), +1 at the top, -1 at the bottom, newest at the right, over a dashed zero line. It is hidden until two readings exist and it restarts whenever the reading does (camera off, paused, toggle). Same neutral light stroke as the bars — a trace of what was read, never a trend line with a verdict, no fill, no axis labels, no gradient, no animation. It plots the browser's own frames; the server's history (`GET /api/expression/timeline`) is a separate thing and the tile never claims to show it.
 
 ## Enrollment
 
@@ -50,7 +52,7 @@ Implemented in `static/js/effects.js` and `static/css/app.css`; all off under `p
 - Camera stage owns most of the viewport.
 - Identity rail overlaps the stage slightly to break strict dashboard symmetry.
 - Panels use different corner geometry and small positional offsets instead of a perfect card grid.
-- Event stream sits below the camera as a secondary evidence layer: only real camera, recognition, greeting, enrollment and store events.
+- Event stream sits below the camera as a secondary evidence layer: only real camera, recognition, greeting, enrollment, store, mood and expression events, at most 8 entries. It is evidence, not a feed: nothing is invented, nothing animates for its own sake, and every entry can be traced to something the server said. "Mood" and "Expression" entries come from the server stream (`events.js`, an `EventSource` on `/api/events?role=browser`) — the server's hysteresis and onset/offset are the truth, and the browser never re-derives or re-debounces them. What it does apply is *display* discipline for a panel with eight slots: an entry replayed after a reconnect is not logged as if it just happened, and the same action label is shown at most every 5 s. Wording stays hedged and describes movement, not the person: "Ben looks happy.", "Ben: brief smile (0.9 s)", "Ben: held smile (6.0 s)" — never "is smiling", never a cause, never "micro-expression" (timing resolves to ~0.6 s). Actions can be frequent while someone talks or is animated; the 8-entry cap and the calm single-line styling are what keep that from turning the panel into a ticker — if it ever reads as busy, that is a signal to log less, not to make it prettier.
 - Product controls are contextual; unavailable actions stay disabled instead of pretending to work.
 
 ## State palette
@@ -72,4 +74,6 @@ Implemented in `static/js/effects.js` and `static/css/app.css`; all off under `p
 - Camera frames are not persisted by the UI; the capture canvas is transient.
 - No synthetic identity events are emitted by the UI.
 - Match distance is shown as a distance (3 decimals), never as a confidence percentage.
+- Expression is shown as a hedged appearance ("looks …") with the caption "a hint, not a fact"; never as "is …", never as "detected", never with a certainty percentage (`tests/test_static.py` enforces the wording).
+- A facial action is shown as a movement with a duration ("brief smile (0.9 s)"), never as a state ("is smiling"), never with a cause, and never as a "micro-expression" — the loop resolves to about 0.6 s (`tests/test_static.py` fails the build on all three).
 - Everything is dependency-free: no CDN, fonts, frameworks or build step (ADR-001).

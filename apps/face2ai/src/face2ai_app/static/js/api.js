@@ -29,6 +29,17 @@ export function resetPresenceBeacon() {
   fetch('/api/presence/reset', { method: 'POST', keepalive: true }).catch(() => {});
 }
 
+/** Runtime opt-in for expression hints (Stage 1). Server answers { enabled, available }; enabling an
+ *  unavailable engine is a 409 whose `detail` names the reason. The only thing the browser ever sends
+ *  for this feature is this flag — no frames, no scores. */
+export async function setExpression(enabled) {
+  return jsonFetch('/api/expression', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: enabled === true }),
+  });
+}
+
 /** Returns { event, agentConnected }: the backend flags on every frame whether a voice agent owns greetings. */
 export async function recognize(blob) {
   const response = await fetch('/api/recognize', { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob });

@@ -32,7 +32,7 @@ class Face2AIAgent(Agent):
         """Rebuild the system prompt when the prompt-relevant situation changed. Returns True if updated.
 
         Every update inserts a config-update item into the chat context, so this is keyed on
-        state/identity/staleness/engine/store-count — not on the elapsed-seconds text or heartbeats.
+        state/identity/engine/store-count — not on the elapsed-seconds text or heartbeats.
         """
         key = self._memory.situation_key()
         if not force and key == self._situation_key:
@@ -43,8 +43,9 @@ class Face2AIAgent(Agent):
 
     @function_tool()
     async def who_is_here(self, context: RunContext) -> str:
-        """Report who is currently in front of the camera according to Face2AI (best-effort recognition, not certainty)."""
-        return self._memory.describe()
+        """Report who is currently in front of the camera according to Face2AI (best-effort recognition, not certainty),
+        including the current hedged mood hint ("wirkt …" / "looks …" — a guess from facial expression, never a fact) if any."""
+        return self._memory.describe(language=self._config.language)
 
     @function_tool()
     async def list_known_people(self, context: RunContext) -> str:

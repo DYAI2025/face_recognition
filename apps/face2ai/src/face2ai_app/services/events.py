@@ -26,7 +26,7 @@ class IdentityEvent:
 class Subscription:
     role: str
     loop: asyncio.AbstractEventLoop
-    queue: asyncio.Queue[IdentityEvent]
+    queue: asyncio.Queue[IdentityEvent | None]  # ``None`` is the sentinel: the broker closed, end the stream
     since_sequence: int  # last sequence that existed when the subscription was registered
     dropped: int = 0  # events discarded because the consumer fell behind (client resumes via replay)
 
@@ -48,12 +48,16 @@ class IdentityEventBroker:
         self._buffer_size = max(1, buffer_size)
         self._buffer: deque[IdentityEvent] = deque(maxlen=self._buffer_size)
         self._subscriptions: set[Subscription] = set()
+        self._closed = False
 
     # ------------------------------------------------------------------ publish
 
-    def publish(self, kind: str, payload: BaseModel | dict[str, Any]) -> IdentityEvent:
+    def publish(self, kind: str, payload: BaseModel | dict[str, Any]) -> IdentityEvent | None:
+        """Fan one event out to every subscriber; ``None`` once the broker is closed (shutdown)."""
         data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else dict(payload)
         with self._lock:
+            if self._closed:
+                return None
             self._sequence += 1
             event = IdentityEvent(sequence=self._sequence, kind=kind, payload=data)
             self._buffer.append(event)
@@ -66,7 +70,7 @@ class IdentityEventBroker:
         return event
 
     @staticmethod
-    def _enqueue(sub: Subscription, event: IdentityEvent) -> None:
+    def _enqueue(sub: Subscription, event: IdentityEvent | None) -> None:
         if sub.queue.full():
             try:
                 sub.queue.get_nowait()  # drop the oldest; the client can replay by sequence
@@ -88,12 +92,38 @@ class IdentityEventBroker:
                 queue=asyncio.Queue(maxsize=self._buffer_size),
                 since_sequence=self._sequence,
             )
+            if self._closed:
+                # A request arriving during shutdown must not re-pin the process on a parked getter.
+                sub.queue.put_nowait(None)
             self._subscriptions.add(sub)
         return sub
 
     def unsubscribe(self, sub: Subscription) -> None:
         with self._lock:
             self._subscriptions.discard(sub)
+
+    # -------------------------------------------------------------------- close
+
+    def close(self) -> None:
+        """End every subscription by handing each queue the ``None`` sentinel. Idempotent.
+
+        Called from ``Face2AIServer.shutdown``: uvicorn waits for in-flight tasks *before* running
+        the lifespan shutdown, so a stream parked on ``queue.get()`` has to be woken here or the
+        process cannot exit (measured: SIGTERM x3 and SIGINT x2 left it running, only SIGKILL
+        worked). The hand-off is ``call_soon_threadsafe`` exactly as in ``publish`` — a direct
+        ``put_nowait`` from another thread does not wake a getter parked on the loop — and happens
+        under the same lock, so no publish can be scheduled after the sentinel.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            for sub in list(self._subscriptions):
+                try:
+                    sub.loop.call_soon_threadsafe(self._enqueue, sub, None)
+                except RuntimeError:
+                    # Loop closed: that subscriber's stream is already gone.
+                    pass
 
     def replay(self, after_sequence: int, up_to: int | None = None) -> list[IdentityEvent]:
         with self._lock:
@@ -104,6 +134,11 @@ class IdentityEventBroker:
             ]
 
     # -------------------------------------------------------------------- state
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
 
     @property
     def last_sequence(self) -> int:

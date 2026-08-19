@@ -1,7 +1,7 @@
 # Face2AI Voice Agent
 
 A voice agent that talks with you and knows who is in front of the camera. It consumes the
-Face2AI presence stream (`GET /api/events`) — states, display names, timestamps — and never sees
+Face2AI presence stream (`GET /api/events`) — states, display names, timestamps, a hedged mood hint — and never sees
 frames or face encodings. Built on [LiveKit Agents](https://docs.livekit.io/agents/) with a
 swappable STT → LLM → TTS pipeline; the default stack costs nothing per minute.
 
@@ -91,7 +91,9 @@ OpenRouter/Groq model ~1–2 s. `FACE2AI_AGENT_LLM=openrouter` switches back at 
 - **MULTIPLE_FACES** → mentions it sees several people and cannot tell who is who.
 - **enrolled** (store event) → welcomes the new person by name.
 - Tools available to the LLM: `who_is_here`, `list_known_people`, `face2ai_status`.
-- The system prompt is rebuilt whenever the situation changes (state, identity, staleness, engine, store size) — "Current situation (updated live)"; heartbeats alone do not churn the chat context.
+- The system prompt is rebuilt whenever the situation changes (state, identity, engine, store size) — "Current situation (updated live)"; heartbeats alone do not churn the chat context.
+- **Mood hint** (Face2AI expression stage 1): presence snapshots and SSE `mood` events carry `mood`/`valence`/`arousal`. The agent keeps them on the current presence and appends one hedged sentence to the situation report in the configured language — "Ben wirkt fröhlich (Valenz +0.6, Erregung +0.1) – nur ein Hinweis aus dem Gesichtsausdruck, keine Tatsache." / "Ben looks happy (valence +0.6, arousal +0.1) — only a hint from facial expression, not a fact." A presence transition starts a fresh, mood-less presence; `to_mood: null` ends the hint. Mood is deliberately **not** part of the situation key: it never rebuilds the prompt, never triggers a greeting and never gates anything — the LLM sees it whenever the prompt is rebuilt for another reason and on demand via `who_is_here`. The prompt rules tell the model to treat it as a guess ("du wirkst …"), never as a fact, never to psychoanalyse or probe.
+- **`action` events** (Face2AI expression stage 2 — facial dynamics such as "brief smile", onset/apex/offset) are **ignored by the agent by design**: it never reacts to how someone's face moves — no dispatch, no instruction refresh, no greeting, no memory change; dynamics are for the browser tile and the Hermes pane/history only (pinned by `test_presence_loop_ignores_action_frames_by_design`).
 - Events replayed after a reconnect update memory but are not spoken; transitions older than 20 s are never spoken.
 
 Rules baked into the prompt: recognition is best-effort and never a login; never invent a name;
@@ -110,6 +112,6 @@ The console run is the acceptance gate for the voice loop (see `docs/boilerplate
 
 ## Privacy / cost boundaries
 
-- Only display names, presence states and timestamps reach the agent; nothing biometric.
+- Only display names, presence states, timestamps and a coarse mood hint (label + two rounded scalars) reach the agent; nothing biometric.
 - Your **voice** goes to whichever STT/LLM/TTS you configure. Local providers keep it on the machine; cloud providers do not — that is documented as an accepted trade-off in `apps/face2ai/docs/architecture/ADR-002-voice-agent.md`.
 - No LiveKit Cloud account is needed for console mode.

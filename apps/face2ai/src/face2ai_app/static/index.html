@@ -81,6 +81,15 @@
             <div class="metric"><div class="metric-label">Faces visible</div><div class="metric-value" id="facesValue">0</div></div>
             <div class="metric"><div class="metric-label">Recognition</div><div class="metric-value muted" id="recognitionValue">Checking</div></div>
             <div class="metric"><div class="metric-label">Identities stored</div><div class="metric-value" id="identityCount">—</div></div>
+            <div class="metric metric-wide" id="expressionTile">
+              <div class="metric-label">Expression <span class="metric-note">a hint, not a fact</span></div>
+              <div class="metric-value muted" id="expressionValue">off</div>
+              <div class="mood-bars" id="moodBars" hidden>
+                <div class="mood-bar"><span class="mood-bar-label">Valence</span><span class="mood-bar-track" aria-hidden="true"><span class="mood-bar-fill" id="valenceFill"></span></span><span class="mood-bar-num" id="valenceValue">—</span></div>
+                <div class="mood-bar"><span class="mood-bar-label">Arousal</span><span class="mood-bar-track" aria-hidden="true"><span class="mood-bar-fill" id="arousalFill"></span></span><span class="mood-bar-num" id="arousalValue">—</span></div>
+              </div>
+              <svg class="affect-spark" id="valenceSpark" viewBox="0 0 120 24" preserveAspectRatio="none" role="img" aria-label="Valence trend across this session's last 120 readings — a hint from facial expression, not a fact" hidden><line class="affect-zero" x1="0" y1="12" x2="120" y2="12"/><polyline id="valenceLine" points=""/></svg>
+            </div>
           </div>
         </section>
 
@@ -91,6 +100,7 @@
           <div class="context-row"><span>Session</span><span id="sessionContext">Not started</span></div>
           <div class="context-row"><span>Greeting cooldown</span><span id="cooldownContext">—</span></div>
           <div class="context-row"><span>Voice agent</span><span id="agentContext">Not connected</span></div>
+          <div class="context-row"><span>Live events</span><span id="eventsContext">Connecting</span></div>
         </section>
 
         <section class="card action-card spotlight">
@@ -100,6 +110,7 @@
             <button class="ghost-btn" id="openIdentitiesButton" type="button"><span>Identities</span><span class="btn-icon" aria-hidden="true">↗</span></button>
             <button class="ghost-btn" id="pauseButton" type="button" disabled><span id="pauseLabel">Pause vision</span><span class="btn-icon" aria-hidden="true">Ⅱ</span></button>
             <button class="danger-btn" id="eraseButton" type="button"><span>Erase all</span><span class="btn-icon" aria-hidden="true">×</span></button>
+            <button class="ghost-btn action-wide" id="expressionButton" type="button" disabled title="Checking the expression engine"><span id="expressionLabel">Expression: off</span><span class="btn-icon" aria-hidden="true">◐</span></button>
           </div>
         </section>
       </aside>

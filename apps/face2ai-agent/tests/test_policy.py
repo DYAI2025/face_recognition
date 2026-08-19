@@ -107,3 +107,17 @@ def test_brief_dropout_does_not_regreet_but_a_real_absence_does():
     assert again is not None and again.kind == "greet_known"
     # a different person arriving is greeted regardless
     assert policy.on_transition(known("Bo", "b", T0 + timedelta(seconds=170)), T0 + timedelta(seconds=170)) is not None
+
+
+def test_instructions_hedge_mood_hints_and_carry_them_in_the_configured_language():
+    memory = PresenceMemory()
+    memory.apply_hello({"presence": {"state": "KNOWN", "identity_id": "a", "display_name": "Ada", "mood": "Happiness", "valence": 0.6, "arousal": 0.1}})
+    text = build_instructions(AgentConfig(language="de"), memory, T0)
+    assert "guesses from facial expression" in text and "never state them as facts" in text
+    assert "psychoanaly" in text and "never probe" in text
+    assert "Ada wirkt fröhlich" in text and "ist fröhlich" not in text
+    en = build_instructions(AgentConfig(language="en"), memory, T0)
+    assert "Ada looks happy" in en and "Ada wirkt" not in en
+    # mood never changes what the greeting policy does
+    policy = GreetingPolicy(AgentConfig(language="de"), cooldown_seconds=15)
+    assert policy.on_transition(known("Ada", "a"), T0) is not None

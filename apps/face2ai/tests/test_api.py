@@ -110,3 +110,18 @@ def test_image_content_type_is_enforced(client):
         headers={"content-type": "application/json"},
     )
     assert response.status_code == 415
+
+
+def test_wrong_length_encoding_in_the_store_is_a_503_not_a_crash(client, fake_engine, face):
+    """The documented contract is "corrupt store -> 503"; a 3-float encoding used to reach math.dist."""
+    fake_engine.faces = [face]
+    client.app.state.settings.identity_store_path.write_text(
+        '[{"id": "1", "display_name": "Mallory", "encodings": [[0.1, 0.2, 0.3]],'
+        ' "created_at": "2026-08-19T00:00:00Z"}]',
+        encoding="utf-8",
+    )
+
+    response = client.post("/api/recognize", content=b"frame", headers=image_headers())
+
+    assert response.status_code == 503
+    assert "invalid identity records" in response.json()["detail"]

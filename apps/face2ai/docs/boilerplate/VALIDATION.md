@@ -14,9 +14,15 @@ node --test 'apps/face2ai/tests/js/**/*.test.mjs'
 ## Runtime shell smoke
 
 ```bash
-PYTHONPATH=apps/face2ai/src uvicorn face2ai_app.main:app --host 127.0.0.1 --port 8765
+uv run --project apps/face2ai face2ai            # the shipped entry point (FACE2AI_HOST/FACE2AI_PORT)
 curl -fsS http://127.0.0.1:8765/healthz
+# Ctrl-C / SIGTERM: the process must be gone in well under a second even with a browser tab open.
 ```
+
+There is no module-level `app`: the app is built by the `create_app` factory. Serving it directly
+(`uvicorn --factory face2ai_app.main:create_app`) works for a look at the shell but is **not** the
+entry point — it lacks `Face2AIServer`, so an attached SSE stream (every open browser tab has one)
+keeps the process alive on SIGTERM until `timeout_graceful_shutdown`. Use the `face2ai` command.
 
 `/healthz` proves the app process only. `/readyz` returns 503 until the actual face-recognition engine can import and initialize.
 

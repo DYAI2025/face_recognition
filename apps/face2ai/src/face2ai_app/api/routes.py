@@ -396,12 +396,18 @@ async def events(
                         subscription.queue.get(), timeout=settings.events_heartbeat_seconds
                     )
                 except asyncio.TimeoutError:
+                    # wait_for cancelling a woken get() can drop the item, so the sentinel alone is
+                    # not enough: the closed broker is the second, authoritative end condition.
+                    if broker.closed:
+                        return
                     expired = tracker.expire()
                     if expired is not None:
                         _publish_presence_transition(request, expired)  # delivered through the queue on the next loop
                         continue
                     yield _sse("heartbeat", {"presence": tracker.snapshot().model_dump(mode="json")})
                     continue
+                if event is None:  # broker closed: the process is shutting down
+                    return
                 if event.sequence <= last_sent:
                     continue
                 last_sent = event.sequence

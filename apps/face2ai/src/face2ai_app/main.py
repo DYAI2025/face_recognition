@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import socket
 from datetime import timedelta
 from pathlib import Path
 
@@ -110,9 +112,53 @@ def create_app(*, settings: Settings | None = None, engine=None, store=None, exp
     return app
 
 
-app = create_app()
+def _broker_of(app: object, *, depth: int = 8) -> IdentityEventBroker | None:
+    """The app's broker, reached through uvicorn's wrappers (``ProxyHeadersMiddleware``)."""
+    for _ in range(depth):
+        if app is None:
+            return None
+        events = getattr(getattr(app, "state", None), "events", None)
+        if isinstance(events, IdentityEventBroker):
+            return events
+        app = getattr(app, "app", None)
+    return None
 
 
-def run() -> None:
+class Face2AIServer(uvicorn.Server):
+    """The process owns its shutdown: it ends its own streams before waiting for them.
+
+    ``uvicorn.Server.shutdown`` awaits ``_wait_tasks_to_complete()`` *before* ``lifespan.shutdown()``
+    (uvicorn 0.48 ``server.py``), so a FastAPI lifespan hook can never release the SSE streams the
+    wait is blocked on. With one browser tab attached that made the process survive SIGTERM x3 and
+    SIGINT x2 — only SIGKILL worked. Closing the broker here, the first shutdown seam that runs,
+    exits in ~0.2 s; ``timeout_graceful_shutdown`` stays a backstop, never the mechanism.
+    """
+
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        broker = _broker_of(self.config.loaded_app)
+        if broker is not None:
+            broker.close()
+        else:  # pragma: no cover - only reachable if the app stops carrying its broker
+            logger.warning("no event broker found on the loaded app; SSE streams may delay shutdown")
+        await super().shutdown(sockets=sockets)
+
+
+def run(*, timeout_graceful_shutdown: int = 10) -> None:
+    """Serve the app. ``timeout_graceful_shutdown`` is the backstop; ``Face2AIServer`` is the mechanism.
+
+    The app is built by uvicorn from the ``create_app`` factory: no module-level instance, so
+    importing this module (the test suite does) neither costs seconds nor binds a real engine.
+    """
     settings = Settings.from_env()
-    uvicorn.run("face2ai_app.main:app", host=settings.host, port=settings.port, reload=False)
+    logging.basicConfig(
+        level=os.getenv("FACE2AI_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    config = uvicorn.Config(
+        create_app,
+        factory=True,
+        host=settings.host,
+        port=settings.port,
+        timeout_graceful_shutdown=timeout_graceful_shutdown,
+    )
+    Face2AIServer(config).run()

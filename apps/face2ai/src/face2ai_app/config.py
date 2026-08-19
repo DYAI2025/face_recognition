@@ -51,6 +51,23 @@ class Settings:
     timeline_seconds: int = 600  # in-memory affect history window (never persisted)
 
     def __post_init__(self) -> None:
+        """Range-check every numeric knob. The ranges are the ones README.md prints — one owner.
+
+        ``tests/test_config.py::test_every_numeric_setting_is_validated`` fails when a numeric field
+        is added to this dataclass without a line here, which is the only thing that stops the
+        per-commit habit that left four knobs (``port``, ``match_tolerance``, ``max_frame_bytes``,
+        ``greeting_cooldown_seconds``) unchecked while eleven were checked (measured at `3857adc`:
+        15 numeric fields, 11 range-checked, 4 not).
+        """
+        if not 1 <= self.port <= 65535:
+            raise ValueError("FACE2AI_PORT must be in 1..65535")
+        if not 0 < self.match_tolerance <= 2:
+            # The knob that decides who you are: <= 0 recognises nobody, a large value everybody.
+            raise ValueError("FACE2AI_MATCH_TOLERANCE must be in (0, 2]")
+        if self.max_frame_bytes < 1:
+            raise ValueError("FACE2AI_MAX_FRAME_BYTES must be >= 1")
+        if self.greeting_cooldown_seconds < 0:
+            raise ValueError("FACE2AI_GREETING_COOLDOWN_SECONDS must be >= 0")
         if self.max_frame_pixels < 1:
             raise ValueError("FACE2AI_MAX_FRAME_PIXELS must be >= 1")
         if self.presence_stale_seconds <= 0:

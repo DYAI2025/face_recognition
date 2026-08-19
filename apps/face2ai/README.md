@@ -55,12 +55,12 @@ back to the default.
 | Variable | Default | Range | Enforced? |
 |---|---|---|---|
 | `FACE2AI_HOST` | `127.0.0.1` | any bind address. Loopback is deliberate: the app has no authentication and must not be reachable from the network | n/a |
-| `FACE2AI_PORT` | `8765` | 1..65535 | **no** |
+| `FACE2AI_PORT` | `8765` | `1..65535` | yes |
 | `FACE2AI_DATA_DIR` | `~/.face2ai` | a directory; `~` is expanded. Holds `identities.json`, and `face2ai.log`/`face2ai.pid` when started through `scripts/face2ai-service.sh` | n/a |
-| `FACE2AI_MATCH_TOLERANCE` | `0.6` | `0 < t <= 2` — Euclidean distance between face encodings; larger is more permissive. Never shown as a confidence percentage | **no** |
-| `FACE2AI_MAX_FRAME_BYTES` | `5242880` (5 MiB) | `>= 1` — request-body limit for `POST /api/recognize` and `/api/enroll` | **no** |
+| `FACE2AI_MATCH_TOLERANCE` | `0.6` | `0 < t <= 2` — Euclidean distance between face encodings; larger is more permissive. Never shown as a confidence percentage | yes |
+| `FACE2AI_MAX_FRAME_BYTES` | `5242880` (5 MiB) | `>= 1` — request-body limit for `POST /api/recognize` and `/api/enroll` | yes |
 | `FACE2AI_MAX_FRAME_PIXELS` | `4000000` (4 MP) | `>= 1` — decoded-pixel budget per frame, checked against the image header *before* decoding (a small file can declare an enormous image). Over the budget is `InvalidFrame` → HTTP 422 | yes |
-| `FACE2AI_GREETING_COOLDOWN_SECONDS` | `15` | `>= 0` — reported by `/api/status`; the browser enforces it | **no** |
+| `FACE2AI_GREETING_COOLDOWN_SECONDS` | `15` | `>= 0` — reported by `/api/status`; the browser enforces it | yes |
 | `FACE2AI_PRESENCE_STABLE_TICKS` | `2` | `>= 1` — frames a presence must hold before it is published | yes |
 | `FACE2AI_PRESENCE_STALE_SECONDS` | `5` | `> 0` — a presence older than this expires to `NO_SIGNAL` | yes |
 | `FACE2AI_EVENTS_HEARTBEAT_SECONDS` | `15` | `> 0` — SSE `heartbeat` interval | yes |
@@ -74,16 +74,23 @@ back to the default.
 | `FACE2AI_ACTION_MIN_FRAMES` | `2` | `>= 1` — frames an action must persist before it is reported | yes |
 | `FACE2AI_TIMELINE_SECONDS` | `600` | `>= 10` — in-memory affect history window (never persisted) | yes |
 
-**Four knobs carry a documented range that nothing enforces yet** — the four marked **no** above. Measured at
-this commit: `Settings(port=70000)`, `match_tolerance=-1`, `max_frame_bytes=0` and
-`greeting_cooldown_seconds=-5` are all accepted (14 numeric fields, 10 range-checked in
-`Settings.__post_init__`, 4 not). Task 3 of `docs/plans/2026-08-19-boundary-contracts.md` closes them; until
-it lands, those four ranges are documentation, not a guarantee.
+**Every range in this table is enforced, and two tests keep it that way.** Until Task 3 of
+`docs/plans/2026-08-19-boundary-contracts.md` landed, four knobs were documentation only:
+`Settings(port=70000)`, `match_tolerance=-1`, `max_frame_bytes=0` and `greeting_cooldown_seconds=-5`
+were all accepted (measured at `3857adc`: 15 numeric fields, 11 range-checked in
+`Settings.__post_init__`, 4 not — they had been added one commit at a time, each validating only its
+own knobs). The owners that stop the next occurrence live in `tests/test_config.py`:
 
-This table itself has no executable owner either: nothing fails when the next knob is added and left
-undocumented — which is how 9 of these 18 came to be undocumented, and how `FACE2AI_HOST`, `FACE2AI_PORT` and
-`FACE2AI_MATCH_TOLERANCE` ended up described only in a wrapper directory outside every repository. A test
-asserting that every `FACE2AI_*` literal in `config.py` appears in this file belongs with the config tests.
+- `test_every_numeric_setting_is_validated` — every `int`/`float` field of `Settings` must be
+  mentioned in `__post_init__`. Adding a numeric knob without a bound fails this test by name.
+- `test_every_setting_is_documented` — every `FACE2AI_*` literal in `config.py` must appear in this
+  table. Adding a knob without a row fails it. (Nine of the earlier eighteen were undocumented, and
+  `FACE2AI_HOST`, `FACE2AI_PORT` and `FACE2AI_MATCH_TOLERANCE` were described only in a wrapper
+  directory outside every repository.)
+
+Neither test checks that a bound is the *right* one — that is what the per-knob cases next to them
+are for. They check that a bound and a row exist at all, which is the failure mode this repository
+actually had.
 
 Read only by `scripts/face2ai-service.sh`, never by the application: `FACE2AI_START_TIMEOUT_SECONDS`
 (default `60`, how long `start` waits for `/healthz`) and `FACE2AI_STOP_TIMEOUT_SECONDS` (default `10`, how

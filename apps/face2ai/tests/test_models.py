@@ -8,9 +8,11 @@ from face2ai_app.domain.models import (
     EMOTIONS,
     ActionEvent,
     AffectSample,
+    DetectedFace,
     Expression,
     FaceBox,
     FaceObservation,
+    IdentityRecord,
     Presence,
     PresenceTransition,
     TimelineSnapshot,
@@ -65,3 +67,20 @@ def test_action_event_is_wire_safe_and_validated():
 def test_timeline_snapshot_shape():
     snap = TimelineSnapshot(seconds=60, samples=[AffectSample(at=datetime.now(timezone.utc), valence=0.2)], moods=[], actions=[])
     assert snap.model_dump()["samples"][0]["mood"] is None
+
+
+def test_stored_encoding_shape_is_enforced():
+    """``IdentityRecord.encodings`` is 128 floats per encoding, like ``DetectedFace.encoding``.
+
+    A hand-edited ``identities.json`` with a shorter vector used to load happily and then make every
+    ``/api/recognize`` raise ``ValueError`` inside ``math.dist`` — an HTTP 500, contradicting the
+    documented "corrupt store -> 503" contract.
+    """
+    now = datetime.now(timezone.utc)
+    ok = IdentityRecord(id="i", display_name="Ada", encodings=[[0.1] * 128], created_at=now)
+    assert len(ok.encodings[0]) == 128
+    for bogus in ([[0.1, 0.2, 0.3]], [[0.1] * 127], [[0.1] * 129], [[0.1] * 128, [0.2] * 3]):
+        with pytest.raises(ValidationError):
+            IdentityRecord(id="i", display_name="Mallory", encodings=bogus, created_at=now)
+    with pytest.raises(ValidationError):
+        DetectedFace(box=FaceBox(top=1, right=2, bottom=3, left=0), encoding=[0.1, 0.2, 0.3])

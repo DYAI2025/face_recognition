@@ -1,3 +1,6 @@
+import inspect
+import re
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -99,3 +102,63 @@ def test_action_and_timeline_settings(monkeypatch):
 def test_action_settings_are_validated(kwargs):
     with pytest.raises(ValueError):
         Settings(**kwargs)
+
+
+# --- Every knob is range-checked, and stays that way (plan §5) ---------------------------------
+#
+# `port`, `match_tolerance`, `max_frame_bytes` and `greeting_cooldown_seconds` carried a documented
+# range in README.md that nothing enforced. `match_tolerance` is the knob that decides who you are.
+
+@pytest.mark.parametrize(("kwargs", "match"), [
+    ({"port": 0}, "FACE2AI_PORT"),
+    ({"port": -1}, "FACE2AI_PORT"),
+    ({"port": 70000}, "FACE2AI_PORT"),
+    ({"match_tolerance": -1}, "FACE2AI_MATCH_TOLERANCE"),
+    ({"match_tolerance": 0}, "FACE2AI_MATCH_TOLERANCE"),
+    ({"match_tolerance": 2.5}, "FACE2AI_MATCH_TOLERANCE"),
+    ({"max_frame_bytes": 0}, "FACE2AI_MAX_FRAME_BYTES"),
+    ({"max_frame_bytes": -1}, "FACE2AI_MAX_FRAME_BYTES"),
+    ({"greeting_cooldown_seconds": -5}, "FACE2AI_GREETING_COOLDOWN_SECONDS"),
+])
+def test_documented_ranges_are_enforced(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        Settings(**kwargs)
+
+
+def test_documented_range_edges_are_accepted():
+    """The bounds README.md prints are inclusive where it says so — a validator must not narrow them."""
+    assert Settings(port=1).port == 1
+    assert Settings(port=65535).port == 65535
+    assert Settings(match_tolerance=2.0).match_tolerance == 2.0
+    assert Settings(max_frame_bytes=1).max_frame_bytes == 1
+    assert Settings(greeting_cooldown_seconds=0).greeting_cooldown_seconds == 0
+
+
+_NUMERIC_ANNOTATION = re.compile(r"\b(?:int|float)\b")
+
+
+def test_every_numeric_setting_is_validated():
+    """Each new knob must be range-checked in ``__post_init__`` — the habit that produced 4 unchecked knobs.
+
+    This is the owner for the rule, not a check of one knob: it fails on the commit that adds a
+    numeric setting without a bound, which is exactly how `port`, `match_tolerance`,
+    `max_frame_bytes` and `greeting_cooldown_seconds` came to be unvalidated one commit at a time.
+
+    Deliberately a *source* scan: it proves a knob is mentioned in ``__post_init__``, not that the
+    bound is the right one. That is the cheapest owner that cannot be satisfied by construction —
+    the range itself is owned by the per-knob tests above and by README.md.
+    """
+    numeric = {f.name for f in fields(Settings) if _NUMERIC_ANNOTATION.search(str(f.type))}
+    assert "match_tolerance" in numeric, "field discovery broke; an empty set would pass vacuously"
+    checked = set(re.findall(r"self\.(\w+)", inspect.getsource(Settings.__post_init__)))
+    assert numeric <= checked, f"unvalidated numeric settings: {sorted(numeric - checked)}"
+
+
+def test_every_setting_is_documented():
+    """README.md's configuration table is the whole env surface — nothing may be added without a row."""
+    config_py = Path(__file__).resolve().parents[1] / "src" / "face2ai_app" / "config.py"
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    names = set(re.findall(r"FACE2AI_[A-Z_]+", config_py.read_text(encoding="utf-8")))
+    assert "FACE2AI_MATCH_TOLERANCE" in names, "env-name discovery broke; an empty set would pass vacuously"
+    documented = readme.read_text(encoding="utf-8")
+    assert sorted(n for n in names if f"`{n}`" not in documented) == []

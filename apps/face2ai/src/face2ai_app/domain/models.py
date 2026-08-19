@@ -7,7 +7,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-Encoding = list[float]
+ENCODING_LENGTH = 128  # dlib's face embedding; the only shape this application ever handles
+
+# One owner for the encoding shape: a *detected* face and a *stored* one are the same 128 floats.
+# They were not — `IdentityRecord.encodings` was a bare `list[list[float]]`, so a hand-edited
+# identities.json loaded happily and then made every recognize raise inside `math.dist`.
+Encoding = Annotated[list[float], Field(min_length=ENCODING_LENGTH, max_length=ENCODING_LENGTH)]
 UnitScore = Annotated[float, Field(ge=0.0, le=1.0)]
 
 
@@ -29,7 +34,7 @@ class FaceBox(BaseModel):
 
 class DetectedFace(BaseModel):
     box: FaceBox
-    encoding: Annotated[Encoding, Field(min_length=128, max_length=128)]
+    encoding: Encoding
 
 
 EMOTIONS = ("Anger", "Contempt", "Disgust", "Fear", "Happiness", "Neutral", "Sadness", "Surprise")

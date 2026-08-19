@@ -38,3 +38,21 @@ def test_store_rejects_wrong_json_root_shape(tmp_path):
 
     with pytest.raises(IdentityStoreCorrupted, match="root must be a JSON array"):
         store.list()
+
+
+_SHORT_ENCODING_RECORD = (
+    '[{"id": "1", "display_name": "Mallory", "encodings": [[0.1, 0.2, 0.3]],'
+    ' "created_at": "2026-08-19T00:00:00Z"}]'
+)
+
+
+def test_store_rejects_a_wrong_length_encoding_without_overwriting_it(tmp_path):
+    """A hand-edited encoding is corrupt data, not a 500 from ``math.dist`` on the next recognize."""
+    path = tmp_path / "identities.json"
+    path.write_text(_SHORT_ENCODING_RECORD, encoding="utf-8")
+    store = JsonIdentityStore(path)
+
+    with pytest.raises(IdentityStoreCorrupted, match="invalid identity records"):
+        store.list()
+
+    assert path.read_text(encoding="utf-8") == _SHORT_ENCODING_RECORD
